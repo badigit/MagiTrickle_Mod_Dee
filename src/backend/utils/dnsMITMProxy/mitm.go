@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	maxTCPMsgSize = 65535
-	acceptTimeout = 1 * time.Second
+	maxTCPMsgSize    = 65535
+	maxUDPBufSize    = 4096
+	acceptTimeout    = 1 * time.Second
 )
 
 type DNSMITMProxy struct {
@@ -36,7 +37,7 @@ func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time
 	return &DNSMITMProxy{
 		bufferPool: &sync.Pool{
 			New: func() interface{} {
-				buf := make([]byte, dns.MaxMsgSize)
+				buf := make([]byte, maxUDPBufSize)
 				return &buf
 			},
 		},

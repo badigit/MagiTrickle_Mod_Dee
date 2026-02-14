@@ -71,12 +71,12 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 	for _, q := range reqMsg.Question {
 		log.Info().
 			Str("id", idStr).
-			Str("name", q.Name).
-			Int("qtype", int(q.Qtype)).
-			Int("qclass", int(q.Qclass)).
-			Str("client", clientAddrStr).
 			Str("net", network).
-			Msg("requested record")
+			Str("name", q.Name).
+			Str("client", clientAddrStr).
+			Int("qclass", int(q.Qclass)).
+			Int("qtype", int(q.Qtype)).
+			Msg("dns request")
 	}
 
 	if a.config.DNSProxy.DisableFakePTR {
@@ -130,8 +130,9 @@ func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) {
 	if msg.Rcode != dns.RcodeSuccess {
 		log.Warn().
 			Str("id", idStr).
-			Str("client", clientAddrStr).
 			Str("net", network).
+			Str("client", clientAddrStr).
+			Str("rcode", dns.RcodeToString[msg.Rcode]).
 			Msg("unprocessable response")
 
 		return
@@ -213,9 +214,9 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 
 				log.Info().
 					Str("name", domainName).
+					Str("groupId", group.ID.String()).
 					Str("address", addrStr).
 					Str("group", group.Name).
-					Str("groupId", group.ID.String()).
 					Msg("added to routing")
 
 				break Rule
@@ -284,9 +285,9 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 
 				log.Info().
 					Str("name", domainName).
+					Str("groupId", group.ID.String()).
 					Str("address", addrStr).
 					Str("group", group.Name).
-					Str("groupId", group.ID.String()).
 					Msg("added to routing")
 
 				break Rule
@@ -328,9 +329,9 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 
 				log.Info().
 					Str("name", domainName).
-					Str("cname", targetName).
-					Str("group", group.Name).
 					Str("groupId", group.ID.String()).
+					Str("group", group.Name).
+					Str("cname", targetName).
 					Msg("added alias")
 
 				for _, address := range addresses {

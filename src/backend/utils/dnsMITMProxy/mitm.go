@@ -3,6 +3,7 @@ package dnsMITMProxy
 import (
 	"context"
 	"errors"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -247,6 +248,12 @@ func (p *DNSMITMProxy) handleTCPConnection(ctx context.Context, clientConn net.C
 		return
 	}
 
+	clientAddr := clientConn.RemoteAddr().String()
+	var reqID string
+	if len(req) >= 2 {
+		reqID = hex.EncodeToString(req[:2])
+	}
+
 	// Now that we have the request, create processing timeout context
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -259,14 +266,14 @@ func (p *DNSMITMProxy) handleTCPConnection(ctx context.Context, clientConn net.C
 	resp, err := p.processReq(reqCtx, clientConn.RemoteAddr(), req, "tcp")
 	if err != nil {
 		if reqCtx.Err() != nil {
-			log.Debug().Msg("request cancelled by context")
+			log.Debug().Str("id", reqID).Str("client", clientAddr).Msg("request cancelled by context")
 			return
 		}
 		var networkErr net.Error
 		if errors.As(err, &networkErr) && networkErr.Timeout() {
-			log.Warn().Err(err).Msg("connection deadline exceeded")
+			log.Warn().Err(err).Str("id", reqID).Str("client", clientAddr).Msg("connection deadline exceeded")
 		} else {
-			log.Error().Err(err).Msg("failed to process request")
+			log.Error().Err(err).Str("id", reqID).Str("client", clientAddr).Msg("failed to process request")
 		}
 		return
 	}
@@ -276,14 +283,14 @@ func (p *DNSMITMProxy) handleTCPConnection(ctx context.Context, clientConn net.C
 	_, err = clientConn.Write(respLenBuf)
 	if err != nil {
 		if reqCtx.Err() == nil {
-			log.Error().Err(err).Msg("failed to send length")
+			log.Error().Err(err).Str("id", reqID).Str("client", clientAddr).Msg("failed to send length")
 		}
 		return
 	}
 	_, err = clientConn.Write(resp)
 	if err != nil {
 		if reqCtx.Err() == nil {
-			log.Error().Err(err).Msg("failed to send response")
+			log.Error().Err(err).Str("id", reqID).Str("client", clientAddr).Msg("failed to send response")
 		}
 		return
 	}
@@ -339,6 +346,12 @@ func (p *DNSMITMProxy) ListenTCP(ctx context.Context, addr *net.TCPAddr) error {
 }
 
 func (p *DNSMITMProxy) handleUDPConnection(ctx context.Context, pconn4 *ipv4.PacketConn, pconn6 *ipv6.PacketConn, requestedAddr net.IP, clientAddr *net.UDPAddr, req []byte, isIPv4 bool, ifIndex int) {
+	clientAddrStr := clientAddr.String()
+	var reqID string
+	if len(req) >= 2 {
+		reqID = hex.EncodeToString(req[:2])
+	}
+
 	// Create context with timeout for this request
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
@@ -346,14 +359,14 @@ func (p *DNSMITMProxy) handleUDPConnection(ctx context.Context, pconn4 *ipv4.Pac
 	resp, err := p.processReq(reqCtx, clientAddr, req, "udp")
 	if err != nil {
 		if reqCtx.Err() != nil {
-			log.Debug().Msg("request cancelled by context")
+			log.Debug().Str("id", reqID).Str("client", clientAddrStr).Msg("request cancelled by context")
 			return
 		}
 		var networkErr net.Error
 		if errors.As(err, &networkErr) && networkErr.Timeout() {
-			log.Warn().Err(err).Msg("connection deadline exceeded")
+			log.Warn().Err(err).Str("id", reqID).Str("client", clientAddrStr).Msg("connection deadline exceeded")
 		} else {
-			log.Error().Err(err).Msg("failed to process request")
+			log.Error().Err(err).Str("id", reqID).Str("client", clientAddrStr).Msg("failed to process request")
 		}
 		return
 	}

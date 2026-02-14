@@ -64,8 +64,8 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 
 	log.Debug().
 		Str("id", idStr).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
+		Str("client", clientAddrStr).
+		Str("net", network).
 		Msg("request received")
 
 	for _, q := range reqMsg.Question {
@@ -74,8 +74,8 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 			Str("name", q.Name).
 			Int("qtype", int(q.Qtype)).
 			Int("qclass", int(q.Qclass)).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
+			Str("client", clientAddrStr).
+			Str("net", network).
 			Msg("requested record")
 	}
 
@@ -130,8 +130,8 @@ func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) {
 	if msg.Rcode != dns.RcodeSuccess {
 		log.Warn().
 			Str("id", idStr).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
+			Str("client", clientAddrStr).
+			Str("net", network).
 			Msg("unprocessable response")
 
 		return
@@ -163,8 +163,8 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 			Str("name", domainName).
 			Str("address", addrStr).
 			Int("ttl", int(aRecord.Hdr.Ttl)).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
+			Str("client", clientAddrStr).
+			Str("net", network).
 			Msg("unprocessable A response")
 		return
 	}
@@ -174,8 +174,8 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 		Str("name", domainName).
 		Str("address", addrStr).
 		Int("ttl", int(aRecord.Hdr.Ttl)).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
+		Str("client", clientAddrStr).
+		Str("net", network).
 		Msg("processing A record")
 
 	ttlDuration := aRecord.Hdr.Ttl + a.config.Netfilter.IPSet.AdditionalTTL
@@ -234,8 +234,8 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 			Str("name", domainName).
 			Str("address", addrStr).
 			Int("ttl", int(aaaaRecord.Hdr.Ttl)).
-			Str("clientAddr", clientAddrStr).
-			Str("network", network).
+			Str("client", clientAddrStr).
+			Str("net", network).
 			Msg("unprocessable AAAA response")
 		return
 	}
@@ -245,8 +245,8 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 		Str("name", domainName).
 		Str("address", addrStr).
 		Int("ttl", int(aaaaRecord.Hdr.Ttl)).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
+		Str("client", clientAddrStr).
+		Str("net", network).
 		Msg("processing AAAA record")
 
 	ttlDuration := aaaaRecord.Hdr.Ttl + a.config.Netfilter.IPSet.AdditionalTTL
@@ -304,8 +304,8 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 		Str("name", domainName).
 		Str("cname", targetName).
 		Int("ttl", int(cNameRecord.Hdr.Ttl)).
-		Str("clientAddr", clientAddrStr).
-		Str("network", network).
+		Str("client", clientAddrStr).
+		Str("net", network).
 		Msg("processing CNAME record")
 
 	ttlDuration := cNameRecord.Hdr.Ttl + a.config.Netfilter.IPSet.AdditionalTTL

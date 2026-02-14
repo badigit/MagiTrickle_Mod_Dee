@@ -25,11 +25,11 @@ type DNSMITMProxy struct {
 	ResponseHook func(net.Addr, dns.Msg, dns.Msg, string) (*dns.Msg, error)
 
 	// Private fields
-	bufferPool  *sync.Pool
-	tcpConnPool *connPool
-	udpConnPool *connPool
-	semaphore   chan struct{}
-	timeout     time.Duration
+	bufferPool   *sync.Pool
+	udpConnPool  *connPool
+	semaphore    chan struct{}
+	timeout      time.Duration
+	upstreamAddr string
 }
 
 func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time.Duration) *DNSMITMProxy {
@@ -40,18 +40,15 @@ func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time
 				return &buf
 			},
 		},
-		timeout:     timeout,
-		tcpConnPool: newConnPool("tcp", addr, maxIdleConns),
-		udpConnPool: newConnPool("udp", addr, maxIdleConns),
-		semaphore:   make(chan struct{}, maxConcurrent),
+		timeout:      timeout,
+		udpConnPool:  newConnPool("udp", addr, maxIdleConns),
+		semaphore:    make(chan struct{}, maxConcurrent),
+		upstreamAddr: addr,
 	}
 }
 
 // Close closes all connection pools and releases resources
 func (p *DNSMITMProxy) Close() error {
-	if p.tcpConnPool != nil {
-		p.tcpConnPool.Close()
-	}
 	if p.udpConnPool != nil {
 		p.udpConnPool.Close()
 	}
@@ -59,82 +56,89 @@ func (p *DNSMITMProxy) Close() error {
 }
 
 func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, network string) ([]byte, error) {
-	var pool *connPool
 	if network == "tcp" {
-		pool = p.tcpConnPool
-	} else {
-		pool = p.udpConnPool
+		return p.requestUpstreamTCP(ctx, req)
 	}
+	return p.requestUpstreamUDP(ctx, req)
+}
 
-	upstreamConn, err := pool.Get(ctx)
+func (p *DNSMITMProxy) requestUpstreamTCP(ctx context.Context, req []byte) ([]byte, error) {
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", p.upstreamAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial DNS upstream: %w", err)
 	}
+	defer func() { _ = conn.Close() }()
 
-	// Set deadline based on context or default timeout
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		deadline = time.Now().Add(p.timeout)
 	}
-	err = upstreamConn.SetDeadline(deadline)
-	if err != nil {
-		_ = upstreamConn.Close()
+	if err = conn.SetDeadline(deadline); err != nil {
 		return nil, fmt.Errorf("failed to set deadline: %w", err)
 	}
 
-	if network == "tcp" {
-		lenBuf := []byte{byte(len(req) >> 8), byte(len(req))}
-		_, err = upstreamConn.Write(lenBuf)
-		if err != nil {
-			_ = upstreamConn.Close()
-			return nil, fmt.Errorf("failed to write length: %w", err)
-		}
+	// Write length prefix + request
+	lenBuf := []byte{byte(len(req) >> 8), byte(len(req))}
+	if _, err = conn.Write(lenBuf); err != nil {
+		return nil, fmt.Errorf("failed to write length: %w", err)
 	}
-
-	_, err = upstreamConn.Write(req)
-	if err != nil {
-		_ = upstreamConn.Close()
+	if _, err = conn.Write(req); err != nil {
 		return nil, fmt.Errorf("failed to write request: %w", err)
 	}
 
-	var resp []byte
-	if network == "tcp" {
-		// Read length prefix directly with bytes
-		lenBuf := make([]byte, 2)
-		_, err = io.ReadFull(upstreamConn, lenBuf)
-		if err != nil {
-			_ = upstreamConn.Close()
-			return nil, fmt.Errorf("failed to read length: %w", err)
-		}
-		respLen := int(lenBuf[0])<<8 | int(lenBuf[1])
-		if respLen > maxTCPMsgSize {
-			_ = upstreamConn.Close()
-			return nil, fmt.Errorf("response too large: %d", respLen)
-		}
-
-		resp = make([]byte, respLen)
-		_, err = io.ReadFull(upstreamConn, resp)
-		if err != nil {
-			_ = upstreamConn.Close()
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
-	} else {
-		bufPtr := p.bufferPool.Get().(*[]byte)
-		defer p.bufferPool.Put(bufPtr)
-		buf := *bufPtr
-
-		n, err := upstreamConn.Read(buf)
-		if err != nil {
-			_ = upstreamConn.Close()
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
-		resp = make([]byte, n)
-		copy(resp, buf[:n])
+	// Read length prefix
+	respLenBuf := make([]byte, 2)
+	if _, err = io.ReadFull(conn, respLenBuf); err != nil {
+		return nil, fmt.Errorf("failed to read length: %w", err)
+	}
+	respLen := int(respLenBuf[0])<<8 | int(respLenBuf[1])
+	if respLen > maxTCPMsgSize {
+		return nil, fmt.Errorf("response too large: %d", respLen)
 	}
 
-	// Return connection to pool
-	pool.Put(upstreamConn)
+	// Read response
+	resp := make([]byte, respLen)
+	if _, err = io.ReadFull(conn, resp); err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
 
+	return resp, nil
+}
+
+func (p *DNSMITMProxy) requestUpstreamUDP(ctx context.Context, req []byte) ([]byte, error) {
+	conn, err := p.udpConnPool.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial DNS upstream: %w", err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(p.timeout)
+	}
+	if err = conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("failed to set deadline: %w", err)
+	}
+
+	if _, err = conn.Write(req); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("failed to write request: %w", err)
+	}
+
+	bufPtr := p.bufferPool.Get().(*[]byte)
+	defer p.bufferPool.Put(bufPtr)
+	buf := *bufPtr
+
+	n, err := conn.Read(buf)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	resp := make([]byte, n)
+	copy(resp, buf[:n])
+
+	p.udpConnPool.Put(conn)
 	return resp, nil
 }
 

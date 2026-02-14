@@ -27,10 +27,10 @@ type DNSMITMProxy struct {
 	ResponseHook func(net.Addr, dns.Msg, dns.Msg, string) (*dns.Msg, error)
 
 	// Private fields
-	bufferPool   *sync.Pool
-	udpConnPool  *connPool
-	semaphore    chan struct{}
-	timeout      time.Duration
+	bufferPool  *sync.Pool
+	udpConnPool *connPool
+	semaphore   chan struct{}
+	timeout     time.Duration
 	upstreamAddr string
 }
 

@@ -185,6 +185,9 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 
 	names := a.recordsCache.GetAliases(domainName)
 	for _, group := range a.groups {
+		if !group.Enabled() || !group.Group.Enable {
+			continue
+		}
 	Rule:
 		for _, domain := range group.Rules {
 			if !domain.IsEnabled() {
@@ -256,6 +259,9 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 
 	names := a.recordsCache.GetAliases(domainName)
 	for _, group := range a.groups {
+		if !group.Enabled() || !group.Group.Enable {
+			continue
+		}
 	Rule:
 		for _, domain := range group.Rules {
 			if !domain.IsEnabled() {
@@ -317,6 +323,9 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 	addresses := a.recordsCache.GetAddresses(domainName)
 	aliases := a.recordsCache.GetAliases(domainName)
 	for _, group := range a.groups {
+		if !group.Enabled() || !group.Group.Enable {
+			continue
+		}
 	Rule:
 		for _, domain := range group.Rules {
 			if !domain.IsEnabled() {

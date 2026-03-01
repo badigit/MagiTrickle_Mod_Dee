@@ -3,3 +3,4 @@
 .DS_Store
 /.claude
 wget-log
+/src/backend/.gocache

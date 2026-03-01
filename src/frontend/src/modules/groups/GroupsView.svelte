@@ -20,6 +20,11 @@
     type GroupDragData,
     type GroupDropSlotData,
   } from "./groups.svelte";
+  import {
+    ConflictsStore,
+    CONFLICTS_STORE_CONTEXT,
+    ConflictsToolbarButton,
+  } from "../conflicts/index";
 
   type Props = {
     onRenderComplete?: () => void;
@@ -29,6 +34,9 @@
 
   const store = new GroupsStore({ onRenderComplete: () => onRenderComplete?.() });
   setContext(GROUPS_STORE_CONTEXT, store);
+
+  const conflictsStore = new ConflictsStore(store);
+  setContext(CONFLICTS_STORE_CONTEXT, conflictsStore);
 
   let importRulesModal = $state<{ open: boolean; groupIndex: number | null }>({
     open: false,
@@ -178,6 +186,7 @@
 
   onDestroy(() => {
     store.destroy();
+    conflictsStore.destroy();
   });
 </script>
 
@@ -186,6 +195,7 @@
     <Search />
 
     <div class="group-controls-actions">
+      <ConflictsToolbarButton />
       <Tooltip value={t("Save Changes")}>
         <Button
           onclick={() => store.saveChanges()}

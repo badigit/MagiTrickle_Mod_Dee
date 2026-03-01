@@ -12,6 +12,7 @@
   import { RULE_TYPES, type Rule } from "../../../types";
   import { VALIDATOP_MAP } from "../../../utils/rule-validators";
   import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
+  import { ConflictRulePopover, CONFLICTS_STORE_CONTEXT, type ConflictsStore } from "../../conflicts/index";
 
   type Props = {
     rule: Rule;
@@ -35,6 +36,8 @@
   if (!store) {
     throw new Error("GroupsStore context is missing");
   }
+  const conflictsStore = getContext<ConflictsStore>(CONFLICTS_STORE_CONTEXT);
+  let hasConflict = $derived(conflictsStore?.conflictsByRuleId.has(rule_id) ?? false);
 
   let input: HTMLInputElement;
 
@@ -148,6 +151,7 @@
 
 <div
   class="rule no-native-dnd"
+  class:conflict-active={hasConflict}
   data-index={rule_index}
   data-group-index={group_index}
   data-uuid={rule_id}
@@ -207,6 +211,7 @@
       />
     </div>
     <div class="actions">
+      <ConflictRulePopover ruleId={rule_id} groupIndex={group_index} ruleIndex={rule_index} />
       <Tooltip value={t(rule.enable ? "Disable Rule" : "Enable Rule")}>
         <Switch bind:checked={rule.enable} />
       </Tooltip>
@@ -293,6 +298,16 @@
   :global(.pattern-input.invalid),
   :global(.pattern-input.invalid:focus-visible) {
     border-bottom: 1px solid var(--red);
+  }
+
+  :global(.rule.conflict-highlight) {
+    animation: conflict-flash 1.5s ease-out forwards;
+  }
+
+  @keyframes conflict-flash {
+    0%   { outline: 2px solid var(--yellow, #f59e0b); box-shadow: 0 0 8px color-mix(in oklab, var(--yellow, #f59e0b) 50%, transparent); }
+    70%  { outline: 2px solid var(--yellow, #f59e0b); box-shadow: 0 0 8px color-mix(in oklab, var(--yellow, #f59e0b) 50%, transparent); }
+    100% { outline: 1px solid color-mix(in oklab, var(--yellow, #f59e0b) 40%, transparent); box-shadow: none; }
   }
 
   .label {

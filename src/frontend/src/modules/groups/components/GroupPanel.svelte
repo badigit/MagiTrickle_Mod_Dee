@@ -30,6 +30,7 @@
   import { defaultRule } from "../../../utils/defaults";
   import { type SortDirection, type SortField } from "../../../utils/rule-sorter";
   import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
+  import { ConflictBadge } from "../../conflicts/index";
 
   type Props = {
     group_index: number;
@@ -258,6 +259,7 @@
             class="group-name"
             bind:value={group.name}
           />
+          <ConflictBadge {group_index} />
         </div>
 
         <div class="group-actions">

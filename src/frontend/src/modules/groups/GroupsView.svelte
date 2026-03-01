@@ -23,7 +23,6 @@
   import {
     ConflictsStore,
     CONFLICTS_STORE_CONTEXT,
-    ConflictsToolbarButton,
   } from "../conflicts/index";
 
   type Props = {
@@ -195,7 +194,6 @@
     <Search />
 
     <div class="group-controls-actions">
-      <ConflictsToolbarButton />
       <Tooltip value={t("Save Changes")}>
         <Button
           onclick={() => store.saveChanges()}

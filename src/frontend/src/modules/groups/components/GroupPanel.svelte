@@ -11,10 +11,12 @@
   import Tooltip from "../../../components/ui/Tooltip.svelte";
   import { interfaces } from "../../../data/interfaces.svelte";
   import { t } from "../../../data/locale.svelte";
+  import { toast } from "../../../utils/events";
   import RuleRow from "./RuleRow.svelte";
 
   import {
     Add,
+    ClipboardCopy,
     Delete,
     Dots,
     Grip,
@@ -205,6 +207,45 @@
       initialOrderIds = null;
     }
   });
+
+  async function copyGroupRules() {
+    if (!group) return;
+
+    const text = group.rules
+      .map((rule) => rule.rule.trim())
+      .filter(Boolean)
+      .join("\n");
+
+    if (!text) {
+      toast.warning(t("No entries to copy"));
+      return;
+    }
+
+    try {
+      if (globalThis.navigator?.clipboard?.writeText) {
+        await globalThis.navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-9999px";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!copied) {
+          throw new Error("execCommand(copy) failed");
+        }
+      }
+      toast.success(t("Entries copied"));
+    } catch (error) {
+      console.error("Failed to copy group rules", error);
+      toast.error(t("Failed to copy entries"));
+    }
+  }
 </script>
 
 <svelte:window bind:innerWidth={client_width} />
@@ -272,7 +313,14 @@
             <Switch class="enable-group" bind:checked={group.enable} />
           </Tooltip>
 
+          <ConflictBadge groupIndex={group_index} />
+
           {#if is_desktop}
+            <Tooltip value={t("Copy Group Entries")}>
+              <Button small onclick={copyGroupRules}>
+                <ClipboardCopy size={20} />
+              </Button>
+            </Tooltip>
             <Tooltip value={t("Delete Group")}>
               <Button small onclick={() => store.deleteGroup(group_index)}>
                 <Delete size={20} />
@@ -300,6 +348,12 @@
                 <Dots size={20} />
               {/snippet}
               {#snippet item1()}
+                <Button general onclick={copyGroupRules}>
+                  <div class="dd-icon"><ClipboardCopy size={20} /></div>
+                  <div class="dd-label">{t("Copy Group Entries")}</div>
+                </Button>
+              {/snippet}
+              {#snippet item2()}
                 <Button
                   general
                   onclick={() => {
@@ -311,13 +365,13 @@
                   <div class="dd-label">{t("Add Rule")}</div>
                 </Button>
               {/snippet}
-              {#snippet item2()}
+              {#snippet item3()}
                 <Button general onclick={() => dispatch("importRules")}>
                   <div class="dd-icon"><ImportList size={20} /></div>
                   <div class="dd-label">{t("Import Rule List")}</div>
                 </Button>
               {/snippet}
-              {#snippet item3()}
+              {#snippet item4()}
                 <Button general onclick={() => store.deleteGroup(group_index)}>
                   <div class="dd-icon"><Delete size={20} /></div>
                   <div class="dd-label">{t("Delete Group")}</div>

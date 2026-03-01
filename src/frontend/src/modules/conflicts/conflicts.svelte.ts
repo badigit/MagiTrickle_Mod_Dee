@@ -99,7 +99,9 @@ export class ConflictsStore {
     const map = new Map<number, number>();
     for (const c of this.conflicts) {
       map.set(c.groupAIndex, (map.get(c.groupAIndex) ?? 0) + 1);
-      map.set(c.groupBIndex, (map.get(c.groupBIndex) ?? 0) + 1);
+      if (c.groupBIndex !== c.groupAIndex) {
+        map.set(c.groupBIndex, (map.get(c.groupBIndex) ?? 0) + 1);
+      }
     }
     return map;
   });

@@ -9,8 +9,15 @@ import type { Interfaces } from "../src/types.ts";
 const API_BASE = "/api/v1";
 
 const INTERFACES: Interfaces = {
-  interfaces: [{ id: "nwg0" }, { id: "longinterf" }, { id: "eth1" }, { id: "wg0" }],
+  interfaces: [
+    { id: "nwg0",      active: true,  ip: "10.0.0.2" },
+    { id: "longinterf",active: true,  ip: "10.8.0.1" },
+    { id: "eth1",      active: false, ip: undefined   },
+    { id: "wg0",       active: true,  ip: "10.10.0.1" },
+  ],
 };
+
+const ALIASES: Record<string, string> = {};
 
 const DATA = JSON.parse(Deno.readTextFileSync("./dev/groups.json"));
 
@@ -86,6 +93,23 @@ app.put(`${API_BASE}/groups`, async (c) => {
   return c.json({ status: "ok" });
 });
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
+app.get(`${API_BASE}/system/interfaces/aliases`, (c) => c.json(ALIASES));
+app.post(`${API_BASE}/system/interfaces/aliases`, async (c) => {
+  const body = await c.req.json();
+  Object.assign(ALIASES, body);
+  return c.json({ status: "ok" });
+});
+app.get(`${API_BASE}/system/interfaces/:id/external-ip`, async (c) => {
+  await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 600));
+  const id = c.req.param("id");
+  const fakeIPs: Record<string, string> = {
+    nwg0: "1.2.3.4",
+    longinterf: "5.6.7.8",
+    wg0: "9.10.11.12",
+  };
+  if (fakeIPs[id]) return c.json({ ip: fakeIPs[id] });
+  return c.json({ ip: "" }, 404);
+});
 app.get(`${API_BASE}/logs`, async (c) => {
   return streamSSE(c, async (stream) => {
     while (true) {

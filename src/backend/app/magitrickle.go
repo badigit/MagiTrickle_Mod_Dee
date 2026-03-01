@@ -18,9 +18,13 @@ type Main interface {
 	AddGroup(groupModel *models.Group) error
 	RemoveGroupByIndex(idx int)
 	ListInterfaces() ([]net.Interface, error)
+	InterfaceAliases() map[string]string
+	SetInterfaceAliases(aliases map[string]string)
 	DnsOverrider() *netfilterTools.PortRemap
 	LoadConfig() error
 	SaveConfig() error
+	LoadInterfaceConfig() error
+	SaveInterfaceConfig() error
 	ImportConfig(cfg config.Config) error
 	ExportConfig() config.Config
 	ForceCommitIPTables() error

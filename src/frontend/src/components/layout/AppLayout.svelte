@@ -3,6 +3,7 @@
 
   import { t } from "../../data/locale.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
+  import InterfacesView from "../../modules/interfaces/InterfacesView.svelte";
   // import LogsPanel from "../../modules/logs/LogsPanel.svelte";
   // import SettingsPanel from "../../modules/settings/SettingsPanel.svelte";
   import Overlay from "../feedback/Overlay.svelte";
@@ -11,7 +12,7 @@
   import Toast from "../feedback/Toast.svelte";
   import HeaderSettings from "./HeaderSettings.svelte";
 
-  import { LayoutList, Menu } from "../ui/icons";
+  import { LayoutList, Menu, Network } from "../ui/icons";
 
   let active_tab = $state("groups");
   let isMenuOpen = $state(false);
@@ -51,6 +52,10 @@
               <span class="tab-icon"><LayoutList size={24} /></span>
               {t("Groups")}
             </Tabs.Trigger>
+            <Tabs.Trigger value="interfaces" onclick={closeMenu}>
+              <span class="tab-icon"><Network size={24} /></span>
+              {t("Interfaces")}
+            </Tabs.Trigger>
 
             <!--
             <Tabs.Trigger value="settings" onclick={closeMenu}>Settings</Tabs.Trigger>
@@ -68,6 +73,9 @@
     <article>
       <Tabs.Content value="groups">
         <GroupsView onRenderComplete={() => (isRenderComplete = true)} />
+      </Tabs.Content>
+      <Tabs.Content value="interfaces">
+        <InterfacesView visible={active_tab === "interfaces"} />
       </Tabs.Content>
       <!-- <Tabs.Content value="settings">...</Tabs.Content> -->
     </article>

@@ -19,6 +19,7 @@ var colorRegExp = regexp2.MustCompile(`^#[0-9a-f]{6}$`, regexp2.IgnoreCase)
 
 const cfgFolderLocation = constant.AppStateDir
 const cfgFileLocation = cfgFolderLocation + "/config.yaml"
+const cfgInterfaceFileLocation = cfgFolderLocation + "/config_interfaces.mtrickle"
 
 func (a *App) LoadConfig() error {
 	cfgFile, err := os.ReadFile(cfgFileLocation)
@@ -50,6 +51,36 @@ func (a *App) SaveConfig() error {
 	}
 	if err := os.WriteFile(cfgFileLocation, out, 0600); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
+	}
+	return nil
+}
+
+func (a *App) LoadInterfaceConfig() error {
+	cfgFile, err := os.ReadFile(cfgInterfaceFileLocation)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("failed to read interface config file: %w", err)
+	}
+	aliases := make(map[string]string)
+	if err := yaml.Unmarshal(cfgFile, &aliases); err != nil {
+		return fmt.Errorf("failed to unmarshal interface config file: %w", err)
+	}
+	a.SetInterfaceAliases(aliases)
+	return nil
+}
+
+func (a *App) SaveInterfaceConfig() error {
+	out, err := yaml.Marshal(a.InterfaceAliases())
+	if err != nil {
+		return fmt.Errorf("failed to marshal interface config file: %w", err)
+	}
+	if err := os.MkdirAll(cfgFolderLocation, os.ModePerm); err != nil {
+		return fmt.Errorf("failed to create config folder: %w", err)
+	}
+	if err := os.WriteFile(cfgInterfaceFileLocation, out, 0600); err != nil {
+		return fmt.Errorf("failed to write interface config file: %w", err)
 	}
 	return nil
 }

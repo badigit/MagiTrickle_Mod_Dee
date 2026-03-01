@@ -129,6 +129,42 @@ func TestIntegration(t *testing.T) {
 		}
 		t.Logf("Created group with ID=%v", newGrp.ID)
 	})
+
+	t.Run("InterfaceAliases", func(t *testing.T) {
+		aliases := map[string]string{
+			"wg0":  "Main tunnel",
+			"ppp1": "Backup",
+		}
+		payload, _ := json.Marshal(aliases)
+
+		resp, body := doRequest(t, http.MethodPost, baseURL+"/system/interfaces/aliases", payload)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("POST /system/interfaces/aliases => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		resp, body = doRequest(t, http.MethodGet, baseURL+"/system/interfaces/aliases", nil)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("GET /system/interfaces/aliases => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var got map[string]string
+		mustDecode(t, body, &got)
+
+		if len(got) != len(aliases) {
+			t.Fatalf("Expected %d aliases, got %d", len(aliases), len(got))
+		}
+		for key, want := range aliases {
+			if got[key] != want {
+				t.Fatalf("Alias %s => %q, want %q", key, got[key], want)
+			}
+		}
+	})
 }
 
 func doRequest(t *testing.T, method, url string, data []byte) (*http.Response, io.ReadCloser) {

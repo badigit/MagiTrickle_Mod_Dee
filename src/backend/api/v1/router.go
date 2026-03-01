@@ -76,7 +76,11 @@ func NewRouter(a app.Main) chi.Router {
 		})
 	})
 	r.Route("/system", func(r chi.Router) {
-		r.Get("/interfaces", h.ListInterfaces)
+		r.Route("/interfaces", func(r chi.Router) {
+			r.Get("/", h.ListInterfaces)
+			r.Get("/aliases", h.ListInterfaceAliases)
+			r.Post("/aliases", h.SaveInterfaceAliases)
+		})
 		r.Route("/config", func(r chi.Router) {
 			r.Post("/save", h.SaveConfig)
 		})

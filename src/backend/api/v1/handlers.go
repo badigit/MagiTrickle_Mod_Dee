@@ -2,6 +2,7 @@ package v1
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 
@@ -68,11 +69,61 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res := make([]types.InterfaceRes, len(interfaces)+1)
-	res[0] = types.InterfaceRes{ID: "blackhole"}
+	res[0] = types.InterfaceRes{ID: "blackhole", Active: true}
 	for i, iface := range interfaces {
-		res[i+1] = types.InterfaceRes{ID: iface.Name}
+		active := iface.Flags&net.FlagUp != 0
+		ip := ""
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+				ip = ipnet.IP.String()
+				break
+			}
+		}
+		res[i+1] = types.InterfaceRes{ID: iface.Name, Active: active, IP: ip}
 	}
 	utils.WriteJson(w, http.StatusOK, types.InterfacesRes{Interfaces: res})
+}
+
+// ListInterfaceAliases
+//
+//	@Summary		Получить список алиасов интерфейсов
+//	@Description	Возвращает список алиасов интерфейсов
+//	@Tags			config
+//	@Produce		json
+//	@Success		200		{object}	map[string]string
+//	@Router			/api/v1/system/interfaces/aliases [get]
+func (h *Handler) ListInterfaceAliases(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, h.app.InterfaceAliases())
+}
+
+// SaveInterfaceAliases
+//
+//	@Summary		Сохранить алиасы интерфейсов
+//	@Description	Сохраняет алиасы интерфейсов
+//	@Tags			config
+//	@Accept			json
+//	@Produce		json
+//	@Param			save	query		bool				false	"Сохранить изменения в конфигурационный файл"
+//	@Param			json	body		map[string]string	true	"Тело запроса"
+//	@Success		200
+//	@Failure		400		{object}	types.ErrorRes
+//	@Failure		500		{object}	types.ErrorRes
+//	@Router			/api/v1/system/interfaces/aliases [post]
+func (h *Handler) SaveInterfaceAliases(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[map[string]string](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.app.SetInterfaceAliases(req)
+	if r.URL.Query().Get("save") == "true" {
+		if err := h.app.SaveInterfaceConfig(); err != nil {
+			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to save config: %v", err))
+			return
+		}
+	}
+	utils.WriteJson(w, http.StatusOK, nil)
 }
 
 // SaveConfig

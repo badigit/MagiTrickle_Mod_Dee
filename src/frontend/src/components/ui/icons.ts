@@ -47,3 +47,5 @@ export { default as SortAsc } from "lucide-svelte/icons/arrow-up-a-z";
 export { default as SortNeutral } from "lucide-svelte/icons/arrow-up-down";
 export { default as Globe } from "lucide-svelte/icons/globe";
 export { default as Scan } from "lucide-svelte/icons/scan";
+export { default as Gauge } from "lucide-svelte/icons/gauge";
+export { default as Network } from "lucide-svelte/icons/network";

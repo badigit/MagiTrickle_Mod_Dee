@@ -35,17 +35,23 @@ type App struct {
 	recordsCache *recordsCache.Records
 	groups       atomic.Pointer[[]*Group]
 	dnsOverrider *netfilterTools.PortRemap
+
+	interfaceAliases map[string]string
 }
 
 // New создаёт новый экземпляр App
 func New() *App {
 	a := &App{
-		config: constant.DefaultAppConfig,
+		config:           constant.DefaultAppConfig,
+		interfaceAliases: make(map[string]string),
 	}
 	emptyGroups := make([]*Group, 0)
 	a.groups.Store(&emptyGroups)
 	if err := a.LoadConfig(); err != nil {
 		log.Error().Err(err).Msg("failed to load config file")
+	}
+	if err := a.LoadInterfaceConfig(); err != nil {
+		log.Error().Err(err).Msg("failed to load interface aliases")
 	}
 	return a
 }
@@ -150,4 +156,21 @@ func (a *App) ListInterfaces() ([]net.Interface, error) {
 // DnsOverrider возвращает dnsOverrider
 func (a *App) DnsOverrider() *netfilterTools.PortRemap {
 	return a.dnsOverrider
+}
+
+// InterfaceAliases returns a copy of configured interface aliases.
+func (a *App) InterfaceAliases() map[string]string {
+	aliases := make(map[string]string, len(a.interfaceAliases))
+	for k, v := range a.interfaceAliases {
+		aliases[k] = v
+	}
+	return aliases
+}
+
+// SetInterfaceAliases replaces configured interface aliases.
+func (a *App) SetInterfaceAliases(aliases map[string]string) {
+	a.interfaceAliases = make(map[string]string, len(aliases))
+	for k, v := range aliases {
+		a.interfaceAliases[k] = v
+	}
 }

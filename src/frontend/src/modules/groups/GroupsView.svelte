@@ -3,7 +3,9 @@
 
   import Button from "../../components/ui/Button.svelte";
   import Placeholder from "../../components/ui/Placeholder.svelte";
+  import Select from "../../components/ui/Select.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
+  import { interfaces } from "../../data/interfaces.svelte";
   import { t } from "../../data/locale.svelte";
   import GroupPanel from "./components/GroupPanel.svelte";
   import Search from "./components/Search.svelte";
@@ -51,6 +53,24 @@
   let isImportingConfig = $state(false);
   let isImportingRules = $state(false);
   let pendingToast = $state<string | null>(null);
+  let bulkInterface = $state("");
+
+  const bulkInterfaceOptions = $derived.by(() => {
+    const unique = new Set<string>();
+    const options: { value: string; label: string }[] = [];
+
+    for (const iface of interfaces.list) {
+      if (unique.has(iface)) continue;
+      unique.add(iface);
+      options.push({ value: iface, label: iface });
+    }
+
+    if (!unique.has("TPROXY")) {
+      options.push({ value: "TPROXY", label: "tproxy" });
+    }
+
+    return options;
+  });
 
   function resetImportConfigModal() {
     importConfigModal = { open: false, fileName: "" };
@@ -154,6 +174,22 @@
     }
   }
 
+  function applyInterfaceToSelected() {
+    if (!bulkInterface) return;
+    store.applyInterfaceToSelected(bulkInterface);
+  }
+
+  $effect(() => {
+    const options = bulkInterfaceOptions;
+    if (!options.length) {
+      bulkInterface = "";
+      return;
+    }
+
+    if (options.some((option) => option.value === bulkInterface)) return;
+    bulkInterface = options[0].value;
+  });
+
   $effect(() => {
     const message = pendingToast;
     if (!message) return;
@@ -219,6 +255,38 @@
         <Button onclick={() => store.addGroup()}><Add size={22} /></Button>
       </Tooltip>
     </div>
+  </div>
+
+  <div class="bulk-controls">
+    <div class="bulk-selected">{t("Selected groups")}: {store.selectedGroupsCount}</div>
+
+    <Tooltip value={t("Select Visible Groups")}>
+      <Button
+        small
+        onclick={() => store.selectVisibleGroups()}
+        inactive={store.visibleGroupCount === 0 || store.allVisibleGroupsSelected}
+      >
+        {t("Select Visible Groups")}
+      </Button>
+    </Tooltip>
+
+    <Tooltip value={t("Clear Selection")}>
+      <Button small onclick={() => store.clearGroupSelection()} inactive={!store.hasSelectedGroups}>
+        {t("Clear Selection")}
+      </Button>
+    </Tooltip>
+
+    <Select options={bulkInterfaceOptions} bind:selected={bulkInterface} ariaLabel={t("Interface")} />
+
+    <Tooltip value={t("Apply Interface")}>
+      <Button
+        class="accent"
+        onclick={applyInterfaceToSelected}
+        inactive={!store.hasSelectedGroups || !bulkInterface}
+      >
+        {t("Apply Interface")}
+      </Button>
+    </Tooltip>
   </div>
 
   {#if store.fetchError}
@@ -440,5 +508,25 @@
     display: flex;
     align-items: center;
     gap: 0.5rem;
+  }
+
+  .bulk-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+  }
+
+  .bulk-selected {
+    color: var(--text-2);
+    font-size: 0.95rem;
+    margin-right: 0.2rem;
+  }
+
+  @media (max-width: 700px) {
+    .bulk-controls {
+      margin-bottom: 0.9rem;
+    }
   }
 </style>

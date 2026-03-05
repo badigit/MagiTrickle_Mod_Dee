@@ -62,6 +62,12 @@
     store.open_state[group.id] = !effectiveOpen;
   }
 
+  function handleGroupSelectionChange(event: Event) {
+    if (!group) return;
+    const target = event.currentTarget as HTMLInputElement;
+    store.setGroupSelected(group.id, target.checked);
+  }
+
   type GroupDnD = {
     group_id: string;
     group_index: number;
@@ -294,6 +300,14 @@
             <Grip />
           </div>
 
+          <label class="group-select" title={t("Select Group")}>
+            <input
+              type="checkbox"
+              checked={store.isGroupSelected(group.id)}
+              onchange={handleGroupSelectionChange}
+            />
+          </label>
+
           <input
             type="text"
             placeholder={t("group name...")}
@@ -305,7 +319,10 @@
 
         <div class="group-actions">
           <Select
-            options={interfaces.list.map((item) => ({ value: item, label: item }))}
+            options={[
+              ...interfaces.list.map((item) => ({ value: item, label: item })),
+              { value: "TPROXY", label: "tproxy" },
+            ]}
             bind:selected={group.interface}
           />
 
@@ -525,6 +542,21 @@
   }
   .group-grip:hover {
     color: var(--text);
+  }
+
+  .group-select {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-2);
+    margin-left: 0.15rem;
+  }
+
+  .group-select input {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--accent);
+    cursor: pointer;
   }
 
   .group-name {

@@ -73,6 +73,7 @@ export class GroupsStore {
   searchValue = $state("");
   visibleGroups = $state<VisibleGroup[]>([]);
   searchPending = $state(false);
+  selectedGroupIds = $state(new Set<string>());
 
   normalizedSearch = $derived(this.searchValue.trim().toLowerCase());
   searchActive = $derived(Boolean(this.normalizedSearch));
@@ -88,6 +89,36 @@ export class GroupsStore {
 
   noVisibleGroups = $derived(
     this.searchActive && !this.searchPending && this.visibleGroups.length === 0,
+  );
+
+  visibleGroupIds = $derived.by(() => {
+    const ids: string[] = [];
+    for (const entry of this.visibleGroups) {
+      const group = this.data[entry.group_index];
+      if (!group) continue;
+      ids.push(group.id);
+    }
+    return ids;
+  });
+
+  visibleGroupCount = $derived(this.visibleGroupIds.length);
+
+  selectedGroupsCount = $derived.by(() => {
+    if (!this.selectedGroupIds.size) return 0;
+    let count = 0;
+    for (const group of this.data) {
+      if (this.selectedGroupIds.has(group.id)) {
+        count += 1;
+      }
+    }
+    return count;
+  });
+
+  hasSelectedGroups = $derived(this.selectedGroupsCount > 0);
+
+  allVisibleGroupsSelected = $derived(
+    this.visibleGroupIds.length > 0 &&
+      this.visibleGroupIds.every((groupId) => this.selectedGroupIds.has(groupId)),
   );
 
   finishedGroupsCount = $state(0);
@@ -140,6 +171,11 @@ export class GroupsStore {
         this.dataRevision;
         if (typeof window === "undefined") return;
         setTimeout(() => this.checkRulesValidityState(), 10);
+      });
+
+      $effect(() => {
+        this.dataRevision;
+        this.syncSelectedGroups();
       });
 
       $effect(() => {
@@ -227,6 +263,7 @@ export class GroupsStore {
   mount = async () => {
     this.finishedGroupsCount = 0;
     this.fetchError = false;
+    this.clearGroupSelection();
     try {
       const fetched =
         (await fetcher.get<{ groups: Group[] }>("/groups?with_rules=true"))?.groups ?? [];
@@ -516,6 +553,69 @@ export class GroupsStore {
     this.dataRevision += 1;
   };
 
+  syncSelectedGroups() {
+    if (!this.selectedGroupIds.size) return;
+
+    const existing = new Set(this.data.map((group) => group.id));
+    let changed = false;
+    const next = new Set<string>();
+
+    for (const groupId of this.selectedGroupIds) {
+      if (!existing.has(groupId)) {
+        changed = true;
+        continue;
+      }
+      next.add(groupId);
+    }
+
+    if (!changed && next.size === this.selectedGroupIds.size) return;
+    this.selectedGroupIds = next;
+  }
+
+  isGroupSelected(groupId: string) {
+    return this.selectedGroupIds.has(groupId);
+  }
+
+  setGroupSelected(groupId: string, selected: boolean) {
+    const next = new Set(this.selectedGroupIds);
+    if (selected) {
+      next.add(groupId);
+    } else {
+      next.delete(groupId);
+    }
+    this.selectedGroupIds = next;
+  }
+
+  clearGroupSelection() {
+    if (!this.selectedGroupIds.size) return;
+    this.selectedGroupIds = new Set<string>();
+  }
+
+  selectVisibleGroups() {
+    if (!this.visibleGroupIds.length) return;
+    const next = new Set(this.selectedGroupIds);
+    for (const groupId of this.visibleGroupIds) {
+      next.add(groupId);
+    }
+    this.selectedGroupIds = next;
+  }
+
+  applyInterfaceToSelected(interfaceId: string) {
+    if (!interfaceId || !this.selectedGroupIds.size) return;
+
+    let changed = false;
+    for (const group of this.data) {
+      if (!this.selectedGroupIds.has(group.id)) continue;
+      if (group.interface === interfaceId) continue;
+      group.interface = interfaceId;
+      changed = true;
+    }
+
+    if (changed) {
+      this.markDataRevision();
+    }
+  }
+
   async addRuleToGroup(group_index: number, rule: Rule, focus = false) {
     const group = this.data[group_index];
     if (!group) return;
@@ -657,6 +757,11 @@ export class GroupsStore {
     if (removed) {
       this.removeForcedGroup(removed.id);
       delete this.open_state[removed.id];
+      if (this.selectedGroupIds.has(removed.id)) {
+        const next = new Set(this.selectedGroupIds);
+        next.delete(removed.id);
+        this.selectedGroupIds = next;
+      }
     }
     this.markDataRevision();
   };
@@ -712,6 +817,7 @@ export class GroupsStore {
     this.renderGroupsLimit = 1;
     this.data.splice(0, this.data.length);
     this.open_state = {};
+    this.clearGroupSelection();
     await this.addGroups(groups);
   }
 

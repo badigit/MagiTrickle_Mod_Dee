@@ -17,13 +17,13 @@ jobs:
           - goos: linux
             goarch: mipsle
             gomips: softfloat
-          - goos: linux
-            goarch: mips
-            gomips: softfloat
+          # - goos: linux
+          #   goarch: mips
+          #   gomips: softfloat
           - goos: linux
             goarch: arm64
-          - goos: linux
-            goarch: arm
+          # - goos: linux
+          #   goarch: arm
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

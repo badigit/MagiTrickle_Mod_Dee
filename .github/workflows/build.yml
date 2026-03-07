@@ -76,7 +76,13 @@ jobs:
             $'\tmkdir -p "$(USRSHARE_DIR)/magitrickle/skins/default"' \
             $'\tcp -r ./src/frontend/dist/* "$(USRSHARE_DIR)/magitrickle/skins/default"' \
             > .ci-frontend.mk
-          for config in config/*/*.config; do
+          # Only Keenetic targets (mipsel + aarch64)
+          for config in \
+            config/entware/mipsel-3.4_kn.config \
+            config/entware/aarch64-3.10_kn.config \
+          ; do
+          # Uncomment below and remove the loop above to build all targets:
+          # for config in config/*/*.config; do
             . "${config}"
             cp "${config}" .config
             rm -rf "./.build/${PLATFORM}_${TARGET}"

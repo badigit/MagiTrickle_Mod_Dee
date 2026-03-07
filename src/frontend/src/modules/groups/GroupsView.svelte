@@ -12,7 +12,7 @@
   import ImportConfigDialog from "./dialogs/ImportConfigDialog.svelte";
   import ImportRulesDialog from "./dialogs/ImportRulesDialog.svelte";
 
-  import { Add, Export, Import, Save } from "../../components/ui/icons";
+  import { Add, Check, Clear, Export, Import, Save, Sigma, ToggleRight } from "../../components/ui/icons";
   import { droppable } from "../../lib/dnd";
   import { toast } from "../../utils/events";
   import { parseConfig, type Group, type Rule } from "../../types";
@@ -258,33 +258,47 @@
   </div>
 
   <div class="bulk-controls">
-    <div class="bulk-selected">{t("Selected groups")}: {store.selectedGroupsCount}</div>
+    <Tooltip value={`${t("Selected groups")}: ${store.selectedGroupsCount}`}>
+      <div class="bulk-selected" aria-label={t("Selected groups")}>
+        <Sigma size={18} />
+        <span>{store.selectedGroupsCount}</span>
+      </div>
+    </Tooltip>
 
-    <Tooltip value={t("Select Visible Groups")}>
+    <Tooltip value={t("Select All Groups")}>
       <Button
         small
-        onclick={() => store.selectVisibleGroups()}
-        inactive={store.visibleGroupCount === 0 || store.allVisibleGroupsSelected}
+        onclick={() => store.selectAllGroups()}
+        inactive={store.groupsCount === 0 || store.allGroupsSelected}
+        aria-label={t("Select All Groups")}
       >
-        {t("Select Visible Groups")}
+        <Check size={18} />
       </Button>
     </Tooltip>
 
     <Tooltip value={t("Clear Selection")}>
-      <Button small onclick={() => store.clearGroupSelection()} inactive={!store.hasSelectedGroups}>
-        {t("Clear Selection")}
+      <Button
+        small
+        onclick={() => store.clearGroupSelection()}
+        inactive={!store.hasSelectedGroups}
+        aria-label={t("Clear Selection")}
+      >
+        <Clear size={18} />
       </Button>
     </Tooltip>
 
-    <Select options={bulkInterfaceOptions} bind:selected={bulkInterface} ariaLabel={t("Interface")} />
+    <div class="bulk-interface-select">
+      <Select options={bulkInterfaceOptions} bind:selected={bulkInterface} ariaLabel={t("Interface")} />
+    </div>
 
     <Tooltip value={t("Apply Interface")}>
       <Button
         class="accent"
         onclick={applyInterfaceToSelected}
         inactive={!store.hasSelectedGroups || !bulkInterface}
+        aria-label={t("Apply Interface")}
       >
-        {t("Apply Interface")}
+        <ToggleRight size={20} />
       </Button>
     </Tooltip>
   </div>
@@ -513,15 +527,33 @@
   .bulk-controls {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.35rem;
     flex-wrap: wrap;
     margin-bottom: 0.75rem;
+    position: relative;
+    z-index: 12;
+    isolation: isolate;
+  }
+
+  .bulk-controls :global([data-select-content]) {
+    z-index: 30;
+  }
+
+  .bulk-interface-select {
+    min-width: 160px;
   }
 
   .bulk-selected {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
     color: var(--text-2);
     font-size: 0.95rem;
+    padding: 0.2rem 0.35rem;
     margin-right: 0.2rem;
+    border-radius: 0.4rem;
+    border: 1px solid var(--bg-light-extra);
+    background: var(--bg-light);
   }
 
   @media (max-width: 700px) {

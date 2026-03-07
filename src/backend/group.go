@@ -21,9 +21,10 @@ type Group struct {
 	enabled atomic.Bool
 	locker  sync.Mutex
 
-	app         *App
-	ipset       *netfilterTools.IPSet
-	ipsetToLink *netfilterTools.IPSetToLink
+	app           *App
+	ipset         *netfilterTools.IPSet
+	ipsetToLink   *netfilterTools.IPSetToLink
+	ipsetToTProxy *netfilterTools.IPSetToTProxy
 }
 
 func (g *Group) Enabled() bool {
@@ -159,20 +160,40 @@ func (g *Group) enable() error {
 	}
 
 	ipset := g.app.nfHelper.IPSet(g.ID.String())
-	ipsetToLink := g.app.nfHelper.IPSetToLink(g.ID.String(), g.Interface, ipset)
-	if err := ipsetToLink.ClearIfDisabled(); err != nil {
-		return fmt.Errorf("failed to clear iptables: %w", err)
-	}
 
-	if err := ipset.Enable(); err != nil {
-		return fmt.Errorf("failed to initialize ipset: %w", err)
-	}
-	g.ipset = ipset
+	switch g.Group.EffectiveRouteMode() {
+	case models.RouteModeTProxy:
+		ipsetToTProxy := g.app.nfHelper.IPSetToTProxy(g.ID.String(), g.app.config.Netfilter.TProxyPort, ipset)
+		if err := ipsetToTProxy.ClearIfDisabled(); err != nil {
+			return fmt.Errorf("failed to clear iptables: %w", err)
+		}
 
-	if err := ipsetToLink.Enable(); err != nil {
-		return fmt.Errorf("failed to link ipset to interface: %w", err)
+		if err := ipset.Enable(); err != nil {
+			return fmt.Errorf("failed to initialize ipset: %w", err)
+		}
+		g.ipset = ipset
+
+		if err := ipsetToTProxy.Enable(); err != nil {
+			return fmt.Errorf("failed to link ipset to tproxy: %w", err)
+		}
+		g.ipsetToTProxy = ipsetToTProxy
+
+	default: // RouteModeInterface
+		ipsetToLink := g.app.nfHelper.IPSetToLink(g.ID.String(), g.Interface, ipset)
+		if err := ipsetToLink.ClearIfDisabled(); err != nil {
+			return fmt.Errorf("failed to clear iptables: %w", err)
+		}
+
+		if err := ipset.Enable(); err != nil {
+			return fmt.Errorf("failed to initialize ipset: %w", err)
+		}
+		g.ipset = ipset
+
+		if err := ipsetToLink.Enable(); err != nil {
+			return fmt.Errorf("failed to link ipset to interface: %w", err)
+		}
+		g.ipsetToLink = ipsetToLink
 	}
-	g.ipsetToLink = ipsetToLink
 
 	return nil
 }
@@ -206,6 +227,16 @@ func (g *Group) disable() error {
 			return fmt.Errorf("failed to unlink ipset from interface: %w", err)
 		}
 		g.ipsetToLink = nil
+		return nil
+	}())
+	errs = append(errs, func() error {
+		if g.ipsetToTProxy == nil {
+			return nil
+		}
+		if err := g.ipsetToTProxy.Disable(); err != nil {
+			return fmt.Errorf("failed to unlink ipset from tproxy: %w", err)
+		}
+		g.ipsetToTProxy = nil
 		return nil
 	}())
 	errs = append(errs, func() error {
@@ -459,6 +490,10 @@ func (g *Group) LinkUpdateHook(event netlink.LinkUpdate) error {
 	}
 
 	if !g.Group.Enable {
+		return nil
+	}
+
+	if g.ipsetToLink == nil {
 		return nil
 	}
 

@@ -174,6 +174,9 @@ func (a *App) ImportConfig(cfg config.Config) error {
 			if cfg.App.Netfilter.StartMarkTableIndex != nil {
 				a.config.Netfilter.StartMarkTableIndex = *cfg.App.Netfilter.StartMarkTableIndex
 			}
+			if cfg.App.Netfilter.TProxyPort != nil {
+				a.config.Netfilter.TProxyPort = *cfg.App.Netfilter.TProxyPort
+			}
 		}
 
 		if cfg.App.Link != nil {
@@ -300,6 +303,7 @@ func (a *App) ExportConfig() config.Config {
 				DisableIPv4:         &a.config.Netfilter.DisableIPv4,
 				DisableIPv6:         &a.config.Netfilter.DisableIPv6,
 				StartMarkTableIndex: &a.config.Netfilter.StartMarkTableIndex,
+				TProxyPort:          &a.config.Netfilter.TProxyPort,
 			},
 			Link:              &a.config.Link,
 			ShowAllInterfaces: &a.config.ShowAllInterfaces,

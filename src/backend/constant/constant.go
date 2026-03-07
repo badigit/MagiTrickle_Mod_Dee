@@ -39,6 +39,7 @@ var DefaultAppConfig = models.AppConfig{
 		DisableIPv4:         false,
 		DisableIPv6:         false,
 		StartMarkTableIndex: 0x4D616769, // Magi
+		TProxyPort:          5001,
 	},
 	Link:              []string{"br0"},
 	ShowAllInterfaces: false,

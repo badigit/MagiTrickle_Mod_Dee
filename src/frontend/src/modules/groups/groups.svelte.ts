@@ -91,17 +91,7 @@ export class GroupsStore {
     this.searchActive && !this.searchPending && this.visibleGroups.length === 0,
   );
 
-  visibleGroupIds = $derived.by(() => {
-    const ids: string[] = [];
-    for (const entry of this.visibleGroups) {
-      const group = this.data[entry.group_index];
-      if (!group) continue;
-      ids.push(group.id);
-    }
-    return ids;
-  });
-
-  visibleGroupCount = $derived(this.visibleGroupIds.length);
+  groupsCount = $derived(this.data.length);
 
   selectedGroupsCount = $derived.by(() => {
     if (!this.selectedGroupIds.size) return 0;
@@ -116,9 +106,8 @@ export class GroupsStore {
 
   hasSelectedGroups = $derived(this.selectedGroupsCount > 0);
 
-  allVisibleGroupsSelected = $derived(
-    this.visibleGroupIds.length > 0 &&
-      this.visibleGroupIds.every((groupId) => this.selectedGroupIds.has(groupId)),
+  allGroupsSelected = $derived(
+    this.groupsCount > 0 && this.selectedGroupsCount === this.groupsCount,
   );
 
   finishedGroupsCount = $state(0);
@@ -591,11 +580,11 @@ export class GroupsStore {
     this.selectedGroupIds = new Set<string>();
   }
 
-  selectVisibleGroups() {
-    if (!this.visibleGroupIds.length) return;
-    const next = new Set(this.selectedGroupIds);
-    for (const groupId of this.visibleGroupIds) {
-      next.add(groupId);
+  selectAllGroups() {
+    if (!this.data.length) return;
+    const next = new Set<string>();
+    for (const group of this.data) {
+      next.add(group.id);
     }
     this.selectedGroupIds = next;
   }

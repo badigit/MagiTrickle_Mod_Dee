@@ -5,6 +5,7 @@ import (
 	"slices"
 
 	"magitrickle/constant"
+	"magitrickle/models"
 
 	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
@@ -32,6 +33,9 @@ func (a *App) handleLink(event netlink.LinkUpdate) {
 				Msg("interface add")
 		}
 		for _, group := range *a.groups.Load() {
+			if group.Group.EffectiveRouteMode() != models.RouteModeInterface {
+				continue
+			}
 			if group.Interface != ifaceName {
 				continue
 			}

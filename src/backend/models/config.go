@@ -49,6 +49,7 @@ type AppConfigNetfilter struct {
 	DisableIPv4         bool
 	DisableIPv6         bool
 	StartMarkTableIndex uint32
+	TProxyPort          uint16
 }
 
 type AppConfigIPTables struct {

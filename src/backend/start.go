@@ -170,6 +170,10 @@ func (a *App) ForceCommitIPTables() error {
 }
 
 func (a *App) setupLogging() {
+	// If CLI already set a level below info (debug/trace), keep it.
+	if zerolog.GlobalLevel() < zerolog.InfoLevel {
+		return
+	}
 	switch a.config.LogLevel {
 	case "trace":
 		zerolog.SetGlobalLevel(zerolog.TraceLevel)

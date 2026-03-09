@@ -66,7 +66,7 @@
     }
 
     if (!unique.has("TPROXY")) {
-      options.push({ value: "TPROXY", label: "tproxy" });
+      options.push({ value: "TPROXY", label: "redir" });
     }
 
     return options;

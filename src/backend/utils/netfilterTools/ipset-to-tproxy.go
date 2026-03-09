@@ -47,57 +47,77 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 		ipsetName += "_6"
 	}
 
-	/*
-		Mangle Prerouting — TPROXY rules for TCP and UDP
-	*/
-
-	err := ipt.RegisterChainOverride("mangle", r.chainName)
-	if err != nil {
-		return fmt.Errorf("failed to create chain: %w", err)
-	}
-
+	portStr := strconv.Itoa(int(r.port))
 	markStr := strconv.Itoa(int(r.mark))
 	tproxyMark := markStr + "/" + markStr
 
-	// DIVERT: packets belonging to established TPROXY connections
-	// get marked and accepted without passing through TPROXY target again.
-	// This is standard practice from Linux kernel TPROXY documentation.
-	for _, proto := range []string{"tcp", "udp"} {
-		err = ipt.Append("mangle", r.chainName,
-			"-p", proto,
-			"-m", "socket",
-			"-j", "MARK", "--set-xmark", tproxyMark,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to append socket MARK rule for %s: %w", proto, err)
-		}
-		err = ipt.Append("mangle", r.chainName,
-			"-p", proto,
-			"-m", "socket",
-			"-j", "ACCEPT",
-		)
-		if err != nil {
-			return fmt.Errorf("failed to append socket ACCEPT rule for %s: %w", proto, err)
-		}
+	/*
+		NAT PREROUTING — TCP REDIRECT
+	*/
+
+	err := ipt.RegisterChainOverride("nat", r.chainName)
+	if err != nil {
+		return fmt.Errorf("failed to create nat chain: %w", err)
 	}
 
-	// TPROXY: redirect new connections matching the ipset to the proxy
-	for _, proto := range []string{"tcp", "udp"} {
-		err = ipt.Append("mangle", r.chainName,
-			"-p", proto,
-			"-m", "set", "--match-set", ipsetName, "dst",
-			"-j", "TPROXY",
-			"--on-port", strconv.Itoa(int(r.port)),
-			"--tproxy-mark", tproxyMark,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to append TPROXY rule for %s: %w", proto, err)
-		}
+	err = ipt.Append("nat", r.chainName,
+		"-p", "tcp",
+		"-m", "set", "--match-set", ipsetName, "dst",
+		"-j", "REDIRECT", "--to-port", portStr,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to append TCP REDIRECT rule: %w", err)
+	}
+
+	err = ipt.Append("nat", "PREROUTING", "-j", r.chainName)
+	if err != nil {
+		return fmt.Errorf("failed to append rule to nat/PREROUTING: %w", err)
+	}
+
+	/*
+		Mangle PREROUTING — UDP TPROXY
+	*/
+
+	err = ipt.RegisterChainOverride("mangle", r.chainName)
+	if err != nil {
+		return fmt.Errorf("failed to create mangle chain: %w", err)
+	}
+
+	// DIVERT: established UDP TPROXY connections get marked and accepted
+	err = ipt.Append("mangle", r.chainName,
+		"-p", "udp",
+		"-m", "set", "--match-set", ipsetName, "dst",
+		"-m", "socket",
+		"-j", "MARK", "--set-xmark", tproxyMark,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to append UDP socket MARK rule: %w", err)
+	}
+	err = ipt.Append("mangle", r.chainName,
+		"-p", "udp",
+		"-m", "set", "--match-set", ipsetName, "dst",
+		"-m", "socket",
+		"-j", "ACCEPT",
+	)
+	if err != nil {
+		return fmt.Errorf("failed to append UDP socket ACCEPT rule: %w", err)
+	}
+
+	// TPROXY: new UDP connections matching the ipset
+	err = ipt.Append("mangle", r.chainName,
+		"-p", "udp",
+		"-m", "set", "--match-set", ipsetName, "dst",
+		"-j", "TPROXY",
+		"--on-port", portStr,
+		"--tproxy-mark", tproxyMark,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to append UDP TPROXY rule: %w", err)
 	}
 
 	err = ipt.Append("mangle", "PREROUTING", "-j", r.chainName)
 	if err != nil {
-		return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
+		return fmt.Errorf("failed to append rule to mangle/PREROUTING: %w", err)
 	}
 
 	err = ipt.Commit()
@@ -114,17 +134,31 @@ func (r *IPSetToTProxy) deleteIPTablesRules(ipt *iptables.IPTables) error {
 	var errs []error
 
 	/*
-		Mangle Prerouting
+		NAT — TCP REDIRECT cleanup
 	*/
 
-	err := ipt.RegisterChainDelete("mangle", r.chainName)
+	err := ipt.RegisterChainDelete("nat", r.chainName)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("failed to delete chain: %w", err))
+		errs = append(errs, fmt.Errorf("failed to delete nat chain: %w", err))
+	}
+
+	err = ipt.Delete("nat", "PREROUTING", "-j", r.chainName)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to unlink nat chain: %w", err))
+	}
+
+	/*
+		Mangle — UDP TPROXY cleanup
+	*/
+
+	err = ipt.RegisterChainDelete("mangle", r.chainName)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to delete mangle chain: %w", err))
 	}
 
 	err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
+		errs = append(errs, fmt.Errorf("failed to unlink mangle chain: %w", err))
 	}
 
 	err = ipt.Commit()
@@ -304,6 +338,7 @@ func (r *IPSetToTProxy) enable() error {
 	}
 
 	ensureKernelModule("xt_TPROXY")
+	ensureKernelModule("xt_socket")
 
 	idx, err := r.getUnusedMarkAndTable()
 	if err != nil {

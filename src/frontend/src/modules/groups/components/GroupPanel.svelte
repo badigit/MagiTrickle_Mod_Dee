@@ -321,7 +321,7 @@
           <Select
             options={[
               ...interfaces.list.map((item) => ({ value: item, label: item })),
-              { value: "TPROXY", label: "tproxy" },
+              { value: "TPROXY", label: "redir" },
             ]}
             bind:selected={group.interface}
           />

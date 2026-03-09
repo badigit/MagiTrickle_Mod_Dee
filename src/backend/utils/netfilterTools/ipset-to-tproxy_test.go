@@ -14,7 +14,9 @@ func newTProxyTestFixture(proto iptables.Protocol) (*IPSetToTProxy, *iptables.Fa
 	fake := iptables.NewFakeIPTables(proto)
 	ipt := iptables.NewIPTables(fake)
 
+	fake.SetInitialRules("nat", "PREROUTING", nil)
 	fake.SetInitialRules("mangle", "PREROUTING", nil)
+	ipt.RegisterChainPatch("nat", "PREROUTING")
 	ipt.RegisterChainPatch("mangle", "PREROUTING")
 
 	r := &IPSetToTProxy{
@@ -41,31 +43,48 @@ func TestInsertIPTablesRulesIPv4(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	// Chain must be created with TPROXY rules for TCP and UDP
+	// NAT chain: TCP REDIRECT
+	if !fake.ChainExists("nat", "MT_TEST") {
+		t.Fatal("chain MT_TEST should exist in nat table")
+	}
+	natRules := fake.GetRules("nat", "MT_TEST")
+	expectedNat := [][]string{
+		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "REDIRECT", "--to-port", "5001"},
+	}
+	if !reflect.DeepEqual(natRules, expectedNat) {
+		t.Errorf("nat chain rules mismatch.\nExpected: %v\nGot:      %v", expectedNat, natRules)
+	}
+
+	// nat/PREROUTING must jump to our chain
+	natPreRules := fake.GetRules("nat", "PREROUTING")
+	expectedNatPre := [][]string{
+		{"-j", "MT_TEST"},
+	}
+	if !reflect.DeepEqual(natPreRules, expectedNatPre) {
+		t.Errorf("nat/PREROUTING rules mismatch.\nExpected: %v\nGot:      %v", expectedNatPre, natPreRules)
+	}
+
+	// Mangle chain: UDP TPROXY only
 	if !fake.ChainExists("mangle", "MT_TEST") {
 		t.Fatal("chain MT_TEST should exist in mangle table")
 	}
-
-	chainRules := fake.GetRules("mangle", "MT_TEST")
-	expectedChain := [][]string{
-		{"-p", "tcp", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
-		{"-p", "tcp", "-m", "socket", "-j", "ACCEPT"},
-		{"-p", "udp", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
-		{"-p", "udp", "-m", "socket", "-j", "ACCEPT"},
-		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "100/100"},
+	mangleRules := fake.GetRules("mangle", "MT_TEST")
+	expectedMangle := [][]string{
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "ACCEPT"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "100/100"},
 	}
-	if !reflect.DeepEqual(chainRules, expectedChain) {
-		t.Errorf("chain rules mismatch.\nExpected: %v\nGot:      %v", expectedChain, chainRules)
+	if !reflect.DeepEqual(mangleRules, expectedMangle) {
+		t.Errorf("mangle chain rules mismatch.\nExpected: %v\nGot:      %v", expectedMangle, mangleRules)
 	}
 
-	// PREROUTING must have a jump to our chain
-	preRules := fake.GetRules("mangle", "PREROUTING")
-	expectedPre := [][]string{
+	// mangle/PREROUTING must jump to our chain
+	manglePreRules := fake.GetRules("mangle", "PREROUTING")
+	expectedManglePre := [][]string{
 		{"-j", "MT_TEST"},
 	}
-	if !reflect.DeepEqual(preRules, expectedPre) {
-		t.Errorf("PREROUTING rules mismatch.\nExpected: %v\nGot:      %v", expectedPre, preRules)
+	if !reflect.DeepEqual(manglePreRules, expectedManglePre) {
+		t.Errorf("mangle/PREROUTING rules mismatch.\nExpected: %v\nGot:      %v", expectedManglePre, manglePreRules)
 	}
 }
 
@@ -73,7 +92,9 @@ func TestInsertIPTablesRulesIPv6(t *testing.T) {
 	fake := iptables.NewFakeIPTables(iptables.ProtocolIPv6)
 	ipt := iptables.NewIPTables(fake)
 
+	fake.SetInitialRules("nat", "PREROUTING", nil)
 	fake.SetInitialRules("mangle", "PREROUTING", nil)
+	ipt.RegisterChainPatch("nat", "PREROUTING")
 	ipt.RegisterChainPatch("mangle", "PREROUTING")
 
 	r := &IPSetToTProxy{
@@ -95,18 +116,24 @@ func TestInsertIPTablesRulesIPv6(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	// IPv6 ipset name must have _6 suffix
-	chainRules := fake.GetRules("mangle", "MT_V6")
-	expectedChain := [][]string{
-		{"-p", "tcp", "-m", "socket", "-j", "MARK", "--set-xmark", "200/200"},
-		{"-p", "tcp", "-m", "socket", "-j", "ACCEPT"},
-		{"-p", "udp", "-m", "socket", "-j", "MARK", "--set-xmark", "200/200"},
-		{"-p", "udp", "-m", "socket", "-j", "ACCEPT"},
-		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_6", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "200/200"},
+	// NAT chain: TCP REDIRECT with _6 suffix
+	natRules := fake.GetRules("nat", "MT_V6")
+	expectedNat := [][]string{
+		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_6", "dst", "-j", "REDIRECT", "--to-port", "5001"},
+	}
+	if !reflect.DeepEqual(natRules, expectedNat) {
+		t.Errorf("nat chain rules mismatch.\nExpected: %v\nGot:      %v", expectedNat, natRules)
+	}
+
+	// Mangle chain: UDP TPROXY with _6 suffix
+	mangleRules := fake.GetRules("mangle", "MT_V6")
+	expectedMangle := [][]string{
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_6", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "200/200"},
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_6", "dst", "-m", "socket", "-j", "ACCEPT"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_6", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "200/200"},
 	}
-	if !reflect.DeepEqual(chainRules, expectedChain) {
-		t.Errorf("chain rules mismatch.\nExpected: %v\nGot:      %v", expectedChain, chainRules)
+	if !reflect.DeepEqual(mangleRules, expectedMangle) {
+		t.Errorf("mangle chain rules mismatch.\nExpected: %v\nGot:      %v", expectedMangle, mangleRules)
 	}
 }
 
@@ -133,17 +160,22 @@ func TestDeleteIPTablesRules(t *testing.T) {
 		t.Fatalf("second Commit failed: %v", err)
 	}
 
-	// Chain should be removed
+	// Both chains should be removed
+	if fake.ChainExists("nat", "MT_TEST") {
+		t.Error("chain MT_TEST should be deleted from nat table after cleanup")
+	}
 	if fake.ChainExists("mangle", "MT_TEST") {
-		t.Error("chain MT_TEST should be deleted after cleanup")
+		t.Error("chain MT_TEST should be deleted from mangle table after cleanup")
 	}
 
-	// PREROUTING should not reference our chain
-	preRules := fake.GetRules("mangle", "PREROUTING")
-	for _, rule := range preRules {
-		for _, arg := range rule {
-			if arg == "MT_TEST" {
-				t.Error("PREROUTING still references MT_TEST after delete")
+	// Neither PREROUTING should reference our chain
+	for _, table := range []string{"nat", "mangle"} {
+		preRules := fake.GetRules(table, "PREROUTING")
+		for _, rule := range preRules {
+			for _, arg := range rule {
+				if arg == "MT_TEST" {
+					t.Errorf("%s/PREROUTING still references MT_TEST after delete", table)
+				}
 			}
 		}
 	}

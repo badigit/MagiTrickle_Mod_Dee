@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -163,6 +164,99 @@ func TestIntegration(t *testing.T) {
 			if got[key] != want {
 				t.Fatalf("Alias %s => %q, want %q", key, got[key], want)
 			}
+		}
+	})
+	ruleListSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "example.com\nDOMAIN,exact.example\nIP-CIDR,10.0.0.0/8\n||adblock.example^\n")
+	}))
+	defer ruleListSrv.Close()
+
+	var subscriptionID string
+
+	t.Run("PreviewSubscriptionRules", func(t *testing.T) {
+		resp, body := doRequest(
+			t,
+			http.MethodGet,
+			baseURL+"/subscription/rules?url="+ruleListSrv.URL,
+			nil,
+		)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("GET /subscription/rules => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var rules types.RulesRes
+		mustDecode(t, body, &rules)
+		if rules.Rules == nil || len(*rules.Rules) < 3 {
+			t.Fatalf("Expected parsed subscription rules, got %#v", rules.Rules)
+		}
+	})
+
+	t.Run("CreateAndSyncSubscription", func(t *testing.T) {
+		interval := int64(86400)
+		req := types.SubscriptionReq{
+			Name:      "Test subscription",
+			Interface: "blackhole",
+			Enable:    true,
+			URL:       ruleListSrv.URL,
+			Interval:  &interval,
+		}
+		payload, _ := json.Marshal(req)
+
+		resp, body := doRequest(t, http.MethodPost, baseURL+"/subscription", payload)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("POST /subscription => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var created types.SubscriptionRes
+		mustDecode(t, body, &created)
+		subscriptionID = created.ID.String()
+		if created.Name != "Test subscription" {
+			t.Fatalf("Expected subscription name=Test subscription, got %s", created.Name)
+		}
+
+		resp, body = doRequest(t, http.MethodPatch, baseURL+"/subscription?id="+subscriptionID, []byte("{}"))
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("PATCH /subscription => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var synced types.SubscriptionSyncRes
+		mustDecode(t, body, &synced)
+		if synced.Rules == nil || len(*synced.Rules) < 3 {
+			t.Fatalf("Expected synced rules, got %#v", synced.Rules)
+		}
+		if synced.LastUpdate == 0 {
+			t.Fatal("Expected non-zero last_update after sync")
+		}
+
+		resp, body = doRequest(t, http.MethodGet, baseURL+"/subscriptions", nil)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("GET /subscriptions => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
+		}
+
+		var subscriptions types.SubscriptionsRes
+		mustDecode(t, body, &subscriptions)
+		if subscriptions.Subscriptions == nil || len(*subscriptions.Subscriptions) == 0 {
+			t.Fatalf("Expected subscriptions list, got %#v", subscriptions.Subscriptions)
+		}
+
+		resp, body = doRequest(t, http.MethodDelete, baseURL+"/subscription?id="+subscriptionID, nil)
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			responseData, _ := io.ReadAll(body)
+			t.Fatalf("DELETE /subscription => %d, want 200. Body: %s", resp.StatusCode, string(responseData))
 		}
 	})
 }

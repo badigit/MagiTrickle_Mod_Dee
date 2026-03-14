@@ -18,6 +18,12 @@ func NewRouter(a app.Main) chi.Router {
 	r := chi.NewRouter()
 	r.Get("/auth", auth.StatusHandler(a))
 	r.Post("/auth", auth.LoginHandler(a))
+	r.Get("/subscriptions", h.GetSubscriptions)
+	r.Put("/subscriptions", h.PutSubscriptions)
+	r.Post("/subscription", h.CreateSubscription)
+	r.Patch("/subscription", h.SyncSubscription)
+	r.Delete("/subscription", h.DeleteSubscription)
+	r.Get("/subscription/rules", h.PreviewSubscriptionRules)
 	r.Route("/groups", func(r chi.Router) {
 		r.Get("/", h.GetGroups)
 		r.Put("/", h.PutGroups)

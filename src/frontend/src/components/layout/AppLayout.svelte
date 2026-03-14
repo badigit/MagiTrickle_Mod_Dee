@@ -4,6 +4,8 @@
   import { t } from "../../data/locale.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
   import InterfacesView from "../../modules/interfaces/InterfacesView.svelte";
+  import SubscriptionsView from "../../modules/subscriptions/SubscriptionsView.svelte";
+  import { persistedState } from "../../utils/persisted-state.svelte";
   // import LogsPanel from "../../modules/logs/LogsPanel.svelte";
   // import SettingsPanel from "../../modules/settings/SettingsPanel.svelte";
   import Overlay from "../feedback/Overlay.svelte";
@@ -12,11 +14,24 @@
   import Toast from "../feedback/Toast.svelte";
   import HeaderSettings from "./HeaderSettings.svelte";
 
-  import { LayoutList, Menu, Network } from "../ui/icons";
+  import { LayoutList, Menu, Network, RSS } from "../ui/icons";
 
-  let active_tab = $state("groups");
+  const lastActiveTab = persistedState("active_tab", "groups");
+  let active_tab = $state(lastActiveTab.current);
   let isMenuOpen = $state(false);
-  let isRenderComplete = $state(false);
+  let isRenderCompleteGroups = $state(false);
+  let isRenderCompleteSubscriptions = $state(false);
+  let isRenderComplete = $derived(
+    active_tab === "groups"
+      ? isRenderCompleteGroups
+      : active_tab === "subscriptions"
+        ? isRenderCompleteSubscriptions
+        : true,
+  );
+
+  $effect(() => {
+    lastActiveTab.current = active_tab;
+  });
 
   const toggleMenu = () => (isMenuOpen = !isMenuOpen);
   const closeMenu = () => (isMenuOpen = false);
@@ -52,6 +67,10 @@
               <span class="tab-icon"><LayoutList size={24} /></span>
               {t("Groups")}
             </Tabs.Trigger>
+            <Tabs.Trigger value="subscriptions" onclick={closeMenu}>
+              <span class="tab-icon"><RSS size={24} strokeWidth={3} /></span>
+              {t("Subscriptions")}
+            </Tabs.Trigger>
             <Tabs.Trigger value="interfaces" onclick={closeMenu}>
               <span class="tab-icon"><Network size={24} /></span>
               {t("Interfaces")}
@@ -72,7 +91,10 @@
 
     <article>
       <Tabs.Content value="groups">
-        <GroupsView onRenderComplete={() => (isRenderComplete = true)} />
+        <GroupsView onRenderComplete={() => (isRenderCompleteGroups = true)} />
+      </Tabs.Content>
+      <Tabs.Content value="subscriptions">
+        <SubscriptionsView onRenderComplete={() => (isRenderCompleteSubscriptions = true)} />
       </Tabs.Content>
       <Tabs.Content value="interfaces">
         <InterfacesView visible={active_tab === "interfaces"} />

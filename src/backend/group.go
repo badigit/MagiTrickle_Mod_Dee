@@ -22,6 +22,7 @@ type Group struct {
 	locker  sync.Mutex
 
 	app           *App
+	runtimeID     string
 	ipset         *netfilterTools.IPSet
 	ipsetToLink   *netfilterTools.IPSetToLink
 	ipsetToTProxy *netfilterTools.IPSetToTProxy
@@ -32,9 +33,14 @@ func (g *Group) Enabled() bool {
 }
 
 func NewGroup(group *models.Group, app *App) (*Group, error) {
+	return newGroupWithRuntimeID(group, app, group.ID.String())
+}
+
+func newGroupWithRuntimeID(group *models.Group, app *App, runtimeID string) (*Group, error) {
 	return &Group{
-		Group: group,
-		app:   app,
+		Group:     group,
+		app:       app,
+		runtimeID: runtimeID,
 	}, nil
 }
 
@@ -159,11 +165,11 @@ func (g *Group) enable() error {
 		return nil
 	}
 
-	ipset := g.app.nfHelper.IPSet(g.ID.String())
+	ipset := g.app.nfHelper.IPSet(g.runtimeID)
 
 	switch g.Group.EffectiveRouteMode() {
 	case models.RouteModeTProxy:
-		ipsetToTProxy := g.app.nfHelper.IPSetToTProxy(g.ID.String(), g.app.config.Netfilter.TProxyPort, ipset)
+		ipsetToTProxy := g.app.nfHelper.IPSetToTProxy(g.runtimeID, g.app.config.Netfilter.TProxyPort, ipset)
 		if err := ipsetToTProxy.ClearIfDisabled(); err != nil {
 			return fmt.Errorf("failed to clear iptables: %w", err)
 		}
@@ -179,7 +185,7 @@ func (g *Group) enable() error {
 		g.ipsetToTProxy = ipsetToTProxy
 
 	default: // RouteModeInterface
-		ipsetToLink := g.app.nfHelper.IPSetToLink(g.ID.String(), g.Interface, ipset)
+		ipsetToLink := g.app.nfHelper.IPSetToLink(g.runtimeID, g.Interface, ipset)
 		if err := ipsetToLink.ClearIfDisabled(); err != nil {
 			return fmt.Errorf("failed to clear iptables: %w", err)
 		}

@@ -13,16 +13,16 @@ on:
 
 jobs:
   build_frontend:
-    name: Build frontend once
+    name: Build frontend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Set up Node.JS
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -32,31 +32,34 @@ jobs:
           make build_frontend
 
       - name: Upload frontend artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: frontend-dist
           path: ./src/frontend/dist
           if-no-files-found: error
 
   build:
-    name: Build packages
+    name: Build ${{ matrix.target }}
     runs-on: ubuntu-latest
     needs: build_frontend
+    strategy:
+      matrix:
+        include:
+          - config: config/entware/mipsel-3.4_kn.config
+            target: mipsel-3.4_kn
+          - config: config/entware/aarch64-3.10_kn.config
+            target: aarch64-3.10_kn
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
-      - name: Set up Node.JS
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+          cache-dependency-path: src/backend/go.sum
 
       - name: Install dependencies
         run: |
@@ -64,7 +67,7 @@ jobs:
           sudo apt-get install -y fakeroot upx
 
       - name: Download frontend artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: frontend-dist
           path: ./src/frontend/dist
@@ -76,33 +79,26 @@ jobs:
             $'\tmkdir -p "$(USRSHARE_DIR)/magitrickle/skins/default"' \
             $'\tcp -r ./src/frontend/dist/* "$(USRSHARE_DIR)/magitrickle/skins/default"' \
             > .ci-frontend.mk
-          # Only Keenetic targets (mipsel + aarch64)
-          for config in \
-            config/entware/mipsel-3.4_kn.config \
-            config/entware/aarch64-3.10_kn.config \
-          ; do
-          # Uncomment below and remove the loop above to build all targets:
-          # for config in config/*/*.config; do
-            . "${config}"
-            cp "${config}" .config
-            rm -rf "./.build/${PLATFORM}_${TARGET}"
-            make -f Makefile -f .ci-frontend.mk build package
-          done
+          . "${{ matrix.config }}"
+          cp "${{ matrix.config }}" .config
+          make -f Makefile -f .ci-frontend.mk build package
 
-      - name: Fetching file list for artifact
+      - name: List built packages
+        if: always()
+        run: find ./.build -name "*.ipk" -ls 2>/dev/null || echo "No .ipk files found"
+
+      - name: Prepare artifact
         if: ${{ github.event_name != 'release' }}
-        id: create_file_list
         run: |
-          echo 'file_list<<EOF' >> $GITHUB_OUTPUT
-          find . -name "magitrickle_*.ipk" -print >> $GITHUB_OUTPUT
-          echo 'EOF' >> $GITHUB_OUTPUT
+          mkdir -p ./artifact
+          cp ./.build/*_${{ matrix.target }}.ipk ./artifact/
 
-      - name: Upload artifact
+      - name: Upload package
         if: ${{ github.event_name != 'release' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: packages
-          path: ${{ steps.create_file_list.outputs.file_list }}
+          name: magitrickle_${{ matrix.target }}
+          path: ./artifact/
           if-no-files-found: error
           compression-level: 0
 
@@ -110,6 +106,5 @@ jobs:
         if: ${{ github.event_name == 'release' }}
         uses: softprops/action-gh-release@v2
         with:
-          files: |-
-            ./.build/magitrickle_*.ipk
+          files: ./.build/magitrickle_*.ipk
           token: ${{ secrets.RELEASE_TOKEN }}

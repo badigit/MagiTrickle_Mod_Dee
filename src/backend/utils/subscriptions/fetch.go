@@ -8,14 +8,23 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"magitrickle/models"
 	"magitrickle/utils/intID"
+
+	"github.com/rs/zerolog/log"
 )
 
-const FetchTimeout = 20 * time.Second
+const (
+	FetchTimeout         = 20 * time.Second
+	FetchFallbackTimeout = 8 * time.Second
+)
 
+// FetchRules fetches subscription rules from the given URL.
+// It tries a direct request first; on failure it retries through each
+// active network interface (SO_BINDTODEVICE) until one succeeds.
 func FetchRules(ctx context.Context, rawURL string) ([]*models.Rule, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if idx := strings.IndexByte(rawURL, '#'); idx >= 0 {
@@ -27,23 +36,94 @@ func FetchRules(ctx context.Context, rawURL string) ([]*models.Rule, error) {
 		return nil, fmt.Errorf("invalid subscription url: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "MagiTrickle/Subscriptions")
+	fetchURL := parsedURL.String()
 
-	client := &http.Client{Timeout: FetchTimeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch subscription rules: %w", err)
+	// Try direct first
+	resp, directErr := doFetch(ctx, fetchURL, "", FetchTimeout)
+	if directErr != nil {
+		log.Debug().Err(directErr).Str("url", fetchURL).Msg("direct fetch failed, trying via interfaces")
+
+		// Fallback: try each active interface
+		resp, err = fetchViaInterfaces(ctx, fetchURL)
+		if err != nil {
+			// Return the original direct error — it's more informative
+			return nil, fmt.Errorf("failed to fetch subscription rules: %w", directErr)
+		}
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("failed to fetch subscription rules: unexpected status %d", resp.StatusCode)
+	return parseRulesFromBody(resp)
+}
+
+func fetchViaInterfaces(ctx context.Context, fetchURL string) (*http.Response, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
 	}
 
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, _ := iface.Addrs()
+		hasIPv4 := false
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.To4() != nil && !ipnet.IP.IsLoopback() {
+				hasIPv4 = true
+				break
+			}
+		}
+		if !hasIPv4 {
+			continue
+		}
+
+		resp, err := doFetch(ctx, fetchURL, iface.Name, FetchFallbackTimeout)
+		if err != nil {
+			log.Debug().Err(err).Str("url", fetchURL).Str("interface", iface.Name).Msg("fetch via interface failed")
+			continue
+		}
+		log.Debug().Str("url", fetchURL).Str("interface", iface.Name).Msg("fetch via interface succeeded")
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("all interfaces failed")
+}
+
+func doFetch(ctx context.Context, url, ifaceName string, timeout time.Duration) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", "MagiTrickle/Subscriptions")
+
+	transport := &http.Transport{}
+	if ifaceName != "" {
+		dialer := &net.Dialer{
+			Timeout: timeout,
+			Control: func(network, address string, c syscall.RawConn) error {
+				return c.Control(func(fd uintptr) {
+					_ = syscall.BindToDevice(int(fd), ifaceName)
+				})
+			},
+		}
+		transport.DialContext = dialer.DialContext
+	}
+
+	client := &http.Client{Timeout: timeout, Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	return resp, nil
+}
+
+func parseRulesFromBody(resp *http.Response) ([]*models.Rule, error) {
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 

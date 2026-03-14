@@ -83,7 +83,7 @@
     globalLoading = true;
 
     const activeInterfaces = interfaceList.filter(
-      (i) => (i.active && i.ip) || (i.active && i.id === "blackhole") || i.id === "TPROXY",
+      (i) => ((i.active && i.ip) || (i.active && i.id === "blackhole")) && i.id !== "TPROXY",
     );
     for (const i of activeInterfaces) {
       externalIPs[i.id] = "loading";
@@ -264,7 +264,7 @@
           </div>
 
           <div class="interface-main-content">
-            <div class="interface-id">{item.id === "TPROXY" ? "redir" : item.id}</div>
+            <div class="interface-id">{item.id === "TPROXY" ? "redir-tproxy" : item.id}</div>
             <input
               type="text"
               placeholder={t("Alias (optional)")}

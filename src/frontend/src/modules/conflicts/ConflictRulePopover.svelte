@@ -26,9 +26,9 @@
 
   function getOther(pair: ConflictPair) {
     if (pair.ruleAId === ruleId) {
-      return { groupId: pair.groupBId, groupIndex: pair.groupBIndex, ruleId: pair.ruleBId, name: pair.ruleBName, groupName: pair.groupBName, pattern: pair.patternB, ruleType: pair.ruleBType };
+      return { groupId: pair.groupBId, groupIndex: pair.groupBIndex, ruleId: pair.ruleBId, name: pair.ruleBName, groupName: pair.groupBName, pattern: pair.patternB, ruleType: pair.ruleBType, readonly: pair.readonlyB };
     }
-    return { groupId: pair.groupAId, groupIndex: pair.groupAIndex, ruleId: pair.ruleAId, name: pair.ruleAName, groupName: pair.groupAName, pattern: pair.patternA, ruleType: pair.ruleAType };
+    return { groupId: pair.groupAId, groupIndex: pair.groupAIndex, ruleId: pair.ruleAId, name: pair.ruleAName, groupName: pair.groupAName, pattern: pair.patternA, ruleType: pair.ruleAType, readonly: pair.readonlyA };
   }
 
   function jumpTo(pair: ConflictPair) {
@@ -77,12 +77,16 @@
                 <span class="other-rule">{other.name || t("(unnamed rule)")} — <code>{other.pattern}</code> <span class="other-type">{other.ruleType}</span></span>
               </div>
               <div class="conflict-row-actions">
-                <button class="action-btn jump" onclick={() => jumpTo(pair)} title={t("Jump to conflicting rule")}>
-                  ↗
-                </button>
-                <button class="action-btn del" onclick={() => deleteOther(pair)} title={t("Delete conflicting rule")}>
-                  <Delete size={13} />
-                </button>
+                {#if !other.readonly}
+                  <button class="action-btn jump" onclick={() => jumpTo(pair)} title={t("Jump to conflicting rule")}>
+                    ↗
+                  </button>
+                  <button class="action-btn del" onclick={() => deleteOther(pair)} title={t("Delete conflicting rule")}>
+                    <Delete size={13} />
+                  </button>
+                {:else}
+                  <span class="readonly-badge">{t("subscription")}</span>
+                {/if}
               </div>
             </div>
           {/each}
@@ -237,5 +241,12 @@
   .action-btn.del:hover {
     background: color-mix(in oklab, var(--red, #ef4444) 15%, transparent);
     border-color: color-mix(in oklab, var(--red, #ef4444) 30%, transparent);
+  }
+
+  .readonly-badge {
+    font-size: 0.65rem;
+    color: var(--text-2);
+    opacity: 0.7;
+    white-space: nowrap;
   }
 </style>

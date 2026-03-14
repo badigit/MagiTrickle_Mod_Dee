@@ -1,6 +1,7 @@
 import { IntervalTree } from "../../utils/interval-tree";
 import { IPUtils } from "../../utils/ip";
-import type { Group } from "../../types";
+import type { Group, Subscription } from "../../types";
+import { fetcher } from "../../utils/fetcher";
 import type { GroupsStore } from "../groups/groups.svelte";
 
 export const CONFLICTS_STORE_CONTEXT = Symbol("conflicts-store");
@@ -14,6 +15,7 @@ export type ConflictPair = {
   ruleAType: string;
   groupAName: string;
   patternA: string;
+  readonlyA: boolean;
   groupBIndex: number;
   groupBId: string;
   ruleBIndex: number;
@@ -22,6 +24,7 @@ export type ConflictPair = {
   ruleBType: string;
   groupBName: string;
   patternB: string;
+  readonlyB: boolean;
 };
 
 type RuleRef = {
@@ -33,6 +36,7 @@ type RuleRef = {
   ruleName: string;
   groupName: string;
   pattern: string;
+  readonly: boolean;
 };
 
 function normalizeCIDR(cidr: string, isIPv6: boolean): string {
@@ -57,6 +61,7 @@ function makePair(a: RuleRef, b: RuleRef): ConflictPair {
     ruleAType: a.ruleType,
     groupAName: a.groupName,
     patternA: a.pattern,
+    readonlyA: a.readonly,
     groupBIndex: b.groupIndex,
     groupBId: b.groupId,
     ruleBIndex: b.ruleIndex,
@@ -65,6 +70,7 @@ function makePair(a: RuleRef, b: RuleRef): ConflictPair {
     ruleBType: b.ruleType,
     groupBName: b.groupName,
     patternB: b.pattern,
+    readonlyB: b.readonly,
   };
 }
 
@@ -109,14 +115,27 @@ export class ConflictsStore {
   hasConflicts = $derived(this.conflicts.length > 0);
   count = $derived(this.conflicts.length);
 
+  #subscriptions = $state<Subscription[]>([]);
+
   constructor(private groupsStore: GroupsStore) {
     this.#dispose = $effect.root(() => {
       $effect(() => {
         void this.groupsStore.dataRevision;
-        void this.groupsStore.data; // track initial load (dataRevision stays 0 on mount)
+        void this.groupsStore.data;
+        void this.#subscriptions;
         this.#compute();
       });
     });
+    this.#loadSubscriptions();
+  }
+
+  async #loadSubscriptions() {
+    try {
+      const res = await fetcher.get<{ subscriptions: Subscription[] }>("/subscriptions");
+      this.#subscriptions = res?.subscriptions ?? [];
+    } catch {
+      this.#subscriptions = [];
+    }
   }
 
   destroy() {
@@ -146,6 +165,7 @@ export class ConflictsStore {
 
     for (let gi = 0; gi < groups.length; gi++) {
       const group = groups[gi];
+      if (!group.enable) continue;
       for (let ri = 0; ri < group.rules.length; ri++) {
         const rule = group.rules[ri];
         if (!rule.rule || !rule.enable) continue;
@@ -158,6 +178,39 @@ export class ConflictsStore {
           ruleType: rule.type,
           ruleName: rule.name,
           groupName: group.name,
+          readonly: false,
+        };
+
+        if (rule.type === "subnet") {
+          ipv4Rules.push({ ...base, pattern: normalizeCIDR(rule.rule, false) });
+        } else if (rule.type === "subnet6") {
+          ipv6Rules.push({ ...base, pattern: normalizeCIDR(rule.rule, true) });
+        } else if (DOMAIN_TYPES.has(rule.type)) {
+          domainRules.push({ ...base, pattern: rule.rule.toLowerCase() });
+        }
+      }
+    }
+
+    // Include subscription rules as readonly
+    const subscriptions = this.#subscriptions;
+    const groupCount = groups.length;
+    for (let si = 0; si < subscriptions.length; si++) {
+      const sub = subscriptions[si];
+      if (!sub.enable) continue;
+      for (let ri = 0; ri < sub.rules.length; ri++) {
+        const rule = sub.rules[ri];
+        if (!rule.rule || !rule.enable) continue;
+
+        const base: RuleRef = {
+          groupIndex: groupCount + si,
+          groupId: sub.id,
+          ruleIndex: ri,
+          ruleId: rule.id,
+          ruleType: rule.type,
+          ruleName: rule.rule,
+          groupName: sub.name,
+          pattern: "",
+          readonly: true,
         };
 
         if (rule.type === "subnet") {

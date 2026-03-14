@@ -58,27 +58,41 @@
               <div class="conflict-list">
                 {#each conflicts as conflict, i (i)}
                   <div class="conflict-item">
-                    <button
-                      class="conflict-rule clickable"
-                      onclick={() => jumpTo(conflict.groupAId, conflict.ruleAId)}
-                      title={t("Jump to rule")}
-                    >
-                      <span class="group-label">{conflict.groupAName || t("(unnamed group)")}</span>
-                      <span class="rule-pattern"><code>{conflict.patternA}</code><span class="rule-type">{conflict.ruleAType}</span></span>
-                    </button>
+                    {#if conflict.readonlyA}
+                      <div class="conflict-rule readonly">
+                        <span class="group-label">{conflict.groupAName || t("(unnamed group)")} <span class="sub-tag">{t("subscription")}</span></span>
+                        <span class="rule-pattern"><code>{conflict.patternA}</code><span class="rule-type">{conflict.ruleAType}</span></span>
+                      </div>
+                    {:else}
+                      <button
+                        class="conflict-rule clickable"
+                        onclick={() => jumpTo(conflict.groupAId, conflict.ruleAId)}
+                        title={t("Jump to rule")}
+                      >
+                        <span class="group-label">{conflict.groupAName || t("(unnamed group)")}</span>
+                        <span class="rule-pattern"><code>{conflict.patternA}</code><span class="rule-type">{conflict.ruleAType}</span></span>
+                      </button>
+                    {/if}
 
                     <div class="conflict-arrow">
                       <ConflictIcon size={14} />
                     </div>
 
-                    <button
-                      class="conflict-rule clickable"
-                      onclick={() => jumpTo(conflict.groupBId, conflict.ruleBId)}
-                      title={t("Jump to rule")}
-                    >
-                      <span class="group-label">{conflict.groupBName || t("(unnamed group)")}</span>
-                      <span class="rule-pattern"><code>{conflict.patternB}</code><span class="rule-type">{conflict.ruleBType}</span></span>
-                    </button>
+                    {#if conflict.readonlyB}
+                      <div class="conflict-rule readonly">
+                        <span class="group-label">{conflict.groupBName || t("(unnamed group)")} <span class="sub-tag">{t("subscription")}</span></span>
+                        <span class="rule-pattern"><code>{conflict.patternB}</code><span class="rule-type">{conflict.ruleBType}</span></span>
+                      </div>
+                    {:else}
+                      <button
+                        class="conflict-rule clickable"
+                        onclick={() => jumpTo(conflict.groupBId, conflict.ruleBId)}
+                        title={t("Jump to rule")}
+                      >
+                        <span class="group-label">{conflict.groupBName || t("(unnamed group)")}</span>
+                        <span class="rule-pattern"><code>{conflict.patternB}</code><span class="rule-type">{conflict.ruleBType}</span></span>
+                      </button>
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -151,6 +165,18 @@
 
   .conflict-rule.clickable:hover .rule-label {
     color: var(--accent);
+  }
+
+  .conflict-rule.readonly {
+    padding: 0.5rem 0.6rem;
+    background: var(--bg-light);
+    opacity: 0.7;
+  }
+
+  .sub-tag {
+    font-size: 0.65rem;
+    color: var(--text-2);
+    opacity: 0.7;
   }
 
   .group-label {

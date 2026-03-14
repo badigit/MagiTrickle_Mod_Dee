@@ -5,6 +5,7 @@
   import Placeholder from "../../components/ui/Placeholder.svelte";
   import Select from "../../components/ui/Select.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
+  import { aliases, getInterfaceLabel } from "../../data/aliases.svelte";
   import { interfaces } from "../../data/interfaces.svelte";
   import { t } from "../../data/locale.svelte";
   import GroupPanel from "./components/GroupPanel.svelte";
@@ -62,11 +63,10 @@
     for (const iface of interfaces.list) {
       if (unique.has(iface)) continue;
       unique.add(iface);
-      options.push({ value: iface, label: iface });
-    }
-
-    if (!unique.has("TPROXY")) {
-      options.push({ value: "TPROXY", label: "redir" });
+      options.push({
+        value: iface,
+        label: getInterfaceLabel(iface),
+      });
     }
 
     return options;
@@ -216,6 +216,7 @@
   });
 
   onMount(() => {
+    void aliases.load();
     void store.mount();
   });
 

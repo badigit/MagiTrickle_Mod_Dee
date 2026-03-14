@@ -30,9 +30,10 @@ export const aliases = {
 
 export function getInterfaceLabel(id: string) {
   if (!id) return "";
+  const display = id === "TPROXY" ? "redir" : id;
   const alias = _aliases[id];
   if (alias) {
-    return `${alias} [${id}]`;
+    return `${alias} [${display}]`;
   }
-  return id;
+  return display;
 }

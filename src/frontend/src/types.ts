@@ -52,20 +52,17 @@ export const GroupSchema = object({
 });
 export type Group = InferOutput<typeof GroupSchema>;
 
-export const SubscriptionRuleSchema = object({
-  enable: fallback(boolean(), true),
-  id: fallback(pipe(string(), length(8), regex(/^[0-9a-f]{8}/)), randomId()),
-  rule: string(),
-  type: fallback(string(), "namespace"),
-});
-export type SubscriptionRule = InferOutput<typeof SubscriptionRuleSchema>;
+/** @deprecated Use Rule instead */
+export const SubscriptionRuleSchema = RuleSchema;
+/** @deprecated Use Rule instead */
+export type SubscriptionRule = Rule;
 
 export const SubscriptionSchema = object({
   id: fallback(pipe(string(), length(8), regex(/^[0-9a-f]{8}/)), randomId()),
   name: fallback(string(), ""),
   interface: string(),
   enable: fallback(boolean(), true),
-  rules: array(SubscriptionRuleSchema),
+  rules: array(RuleSchema),
   url: string(),
   last_update: fallback(optional(number()), 0),
   interval: fallback(optional(number()), 86400),

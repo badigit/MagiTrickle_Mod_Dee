@@ -150,5 +150,6 @@
   "Failed to save aliases": "Не удалось сохранить псевдонимы",
   "interface.active": "Активен",
   "interface.inactive": "(неактивный)",
-  "interface.ip": "IP-адрес"
+  "interface.ip": "IP-адрес",
+  "subscription": "подписка"
 }

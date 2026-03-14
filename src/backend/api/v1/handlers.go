@@ -1,7 +1,6 @@
 package v1
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net"
@@ -88,20 +87,22 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 		}
 		res = append(res, types.InterfaceRes{ID: iface.Name, Active: active, IP: ip})
 	}
-	// Add redir-tproxy as a virtual interface entry
+	// Add redir-tproxy as a virtual interface entry (only if TProxyPort is configured)
 	tproxyPort := h.app.Config().Netfilter.TProxyPort
-	hasTPROXYGroups := false
-	for _, g := range h.app.Groups() {
-		if g.Model().EffectiveRouteMode() == models.RouteModeTProxy && g.Model().Enable {
-			hasTPROXYGroups = true
-			break
+	if tproxyPort > 0 {
+		hasTPROXYGroups := false
+		for _, g := range h.app.Groups() {
+			if g.Model().EffectiveRouteMode() == models.RouteModeTProxy && g.Model().Enable {
+				hasTPROXYGroups = true
+				break
+			}
 		}
+		res = append(res, types.InterfaceRes{
+			ID:     models.InterfaceTProxy,
+			Active: hasTPROXYGroups,
+			IP:     fmt.Sprintf("redir-port:%d", tproxyPort),
+		})
 	}
-	res = append(res, types.InterfaceRes{
-		ID:     models.InterfaceTProxy,
-		Active: hasTPROXYGroups,
-		IP:     fmt.Sprintf("redir-port:%d", tproxyPort),
-	})
 	utils.WriteJson(w, http.StatusOK, types.InterfacesRes{Interfaces: res})
 }
 
@@ -114,55 +115,8 @@ func (h *Handler) GetExternalIP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case ifaceID == models.InterfaceTProxy:
-		// Route through mihomo SOCKS5 proxy to check exit IP
-		socksAddr := "127.0.0.1:7890"
-		dialer := &net.Dialer{Timeout: timeout}
-		client = &http.Client{
-			Timeout: timeout,
-			Transport: &http.Transport{
-				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-					// SOCKS5 CONNECT handshake
-					conn, err := dialer.DialContext(ctx, "tcp", socksAddr)
-					if err != nil {
-						return nil, err
-					}
-					// Auth: no auth
-					if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-						conn.Close()
-						return nil, err
-					}
-					buf := make([]byte, 2)
-					if _, err := io.ReadFull(conn, buf); err != nil {
-						conn.Close()
-						return nil, err
-					}
-					if buf[0] != 0x05 || buf[1] != 0x00 {
-						conn.Close()
-						return nil, fmt.Errorf("socks5 auth failed")
-					}
-					// CONNECT request (domain)
-					host, port, _ := net.SplitHostPort(addr)
-					portNum, _ := strconv.Atoi(port)
-					req := []byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}
-					req = append(req, []byte(host)...)
-					req = append(req, byte(portNum>>8), byte(portNum))
-					if _, err := conn.Write(req); err != nil {
-						conn.Close()
-						return nil, err
-					}
-					resp := make([]byte, 10)
-					if _, err := io.ReadFull(conn, resp); err != nil {
-						conn.Close()
-						return nil, err
-					}
-					if resp[1] != 0x00 {
-						conn.Close()
-						return nil, fmt.Errorf("socks5 connect failed: %d", resp[1])
-					}
-					return conn, nil
-				},
-			},
-		}
+		utils.WriteJson(w, http.StatusOK, map[string]string{"ip": ""})
+		return
 	case ifaceID == "blackhole":
 		utils.WriteJson(w, http.StatusOK, map[string]string{"ip": "0.0.0.0"})
 		return

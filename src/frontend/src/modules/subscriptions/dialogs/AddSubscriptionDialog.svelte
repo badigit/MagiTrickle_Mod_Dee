@@ -4,6 +4,7 @@
   import Button from "../../../components/ui/Button.svelte";
   import GenericDialog from "../../../components/ui/GenericDialog.svelte";
   import Select from "../../../components/ui/Select.svelte";
+  import { getInterfaceLabel } from "../../../data/aliases.svelte";
   import { interfaces } from "../../../data/interfaces.svelte";
   import { t } from "../../../data/locale.svelte";
   import { handleIntervalChange, intervals } from "../components/SubscriptionPanel.svelte";
@@ -214,7 +215,7 @@
               <span class="icon"><Network size={18} /></span>
               <Select
                 id="sub-interface"
-                options={interfaces.list.map((i) => ({ value: i, label: i }))}
+                options={interfaces.list.map((i) => ({ value: i, label: getInterfaceLabel(i) }))}
                 bind:selected={selectedInterface}
                 class="interface-select"
               />

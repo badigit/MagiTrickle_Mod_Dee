@@ -115,7 +115,11 @@ func (a *App) Start(ctx context.Context) (err error) {
 		}()
 	}
 
-	for _, group := range *a.groups.Load() {
+	if err := a.RebuildSubscriptionGroups(); err != nil {
+		return fmt.Errorf("failed to prepare subscription groups: %w", err)
+	}
+
+	for _, group := range a.routingGroups() {
 		if err := group.Enable(); err != nil {
 			return fmt.Errorf("failed to enable group: %w", err)
 		}
@@ -124,10 +128,12 @@ func (a *App) Start(ctx context.Context) (err error) {
 		}
 	}
 	defer func() {
-		for _, group := range *a.groups.Load() {
+		for _, group := range a.routingGroups() {
 			_ = group.Disable()
 		}
 	}()
+
+	a.startSubscriptionSyncLoop(newCtx, errChan)
 
 	linkUpdateChannel, linkUpdateDone, err := subscribeLinkUpdates()
 	if err != nil {

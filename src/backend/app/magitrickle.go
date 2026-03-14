@@ -27,6 +27,11 @@ type Main interface {
 	SaveInterfaceConfig() error
 	ImportConfig(cfg config.Config) error
 	ExportConfig() config.Config
+	Subscriptions() []*models.Subscription
+	ClearSubscriptions()
+	AddSubscription(subscription *models.Subscription) error
+	RemoveSubscriptionByIndex(idx int)
+	RebuildSubscriptionGroups() error
 	ForceCommitIPTables() error
 	Start(ctx context.Context) (err error)
 }

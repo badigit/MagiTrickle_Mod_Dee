@@ -114,3 +114,78 @@ func RespFromRule(rule *models.Rule) types.RuleRes {
 		Enable: rule.Enable,
 	}
 }
+
+func SubscriptionFromReq(req types.SubscriptionReq, existing *models.Subscription) (*models.Subscription, error) {
+	var subscription *models.Subscription
+	if existing == nil {
+		subscription = &models.Subscription{ID: intID.RandomID(), Interval: 86400}
+	} else {
+		subscription = existing
+	}
+	if req.ID != nil {
+		if existing != nil && subscription.ID != *req.ID {
+			return nil, fmt.Errorf("subscription ID mismatch")
+		}
+		if existing == nil {
+			subscription.ID = *req.ID
+		}
+	}
+
+	subscription.Name = req.Name
+	subscription.Interface = req.Interface
+	subscription.Enable = req.Enable
+	subscription.URL = req.URL
+
+	if req.LastUpdate != nil {
+		subscription.LastUpdate = *req.LastUpdate
+	}
+	if req.Interval != nil && *req.Interval > 0 {
+		subscription.Interval = *req.Interval
+	}
+	if subscription.Interval == 0 {
+		subscription.Interval = 86400
+	}
+
+	if req.Rules != nil {
+		newRules := make([]*models.Rule, len(*req.Rules))
+		for i, ruleReq := range *req.Rules {
+			r, err := RuleFromReq(ruleReq, subscription.Rules)
+			if err != nil {
+				return nil, err
+			}
+			newRules[i] = r
+		}
+		subscription.Rules = newRules
+	}
+
+	return subscription, nil
+}
+
+func RespFromSubscriptions(subscriptions []*models.Subscription) types.SubscriptionsRes {
+	subscriptionResList := make([]types.SubscriptionRes, len(subscriptions))
+	for i, subscription := range subscriptions {
+		subscriptionResList[i] = RespFromSubscription(subscription)
+	}
+	return types.SubscriptionsRes{Subscriptions: &subscriptionResList}
+}
+
+func RespFromSubscription(subscription *models.Subscription) types.SubscriptionRes {
+	return types.SubscriptionRes{
+		ID:         subscription.ID,
+		Name:       subscription.Name,
+		Interface:  subscription.Interface,
+		Enable:     subscription.Enable,
+		URL:        subscription.URL,
+		LastUpdate: subscription.LastUpdate,
+		Interval:   subscription.Interval,
+		RulesRes:   RespFromRules(subscription.Rules),
+	}
+}
+
+func RespFromSubscriptionSync(subscription *models.Subscription) types.SubscriptionSyncRes {
+	rulesRes := RespFromRules(subscription.Rules)
+	return types.SubscriptionSyncRes{
+		Rules:      rulesRes.Rules,
+		LastUpdate: subscription.LastUpdate,
+	}
+}

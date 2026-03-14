@@ -21,6 +21,7 @@ var (
 	ErrAlreadyRunning           = errors.New("already running")
 	ErrGroupIDConflict          = errors.New("group id conflict")
 	ErrRuleIDConflict           = errors.New("rule id conflict")
+	ErrSubscriptionIDConflict   = errors.New("subscription id conflict")
 	ErrConfigUnsupportedVersion = errors.New("config unsupported version")
 )
 
@@ -30,11 +31,13 @@ type App struct {
 
 	config models.AppConfig
 
-	dnsMITM      *dnsMITMProxy.DNSMITMProxy
-	nfHelper     *netfilterTools.Helper
-	recordsCache *recordsCache.Records
-	groups       atomic.Pointer[[]*Group]
-	dnsOverrider *netfilterTools.PortRemap
+	dnsMITM            *dnsMITMProxy.DNSMITMProxy
+	nfHelper           *netfilterTools.Helper
+	recordsCache       *recordsCache.Records
+	groups             atomic.Pointer[[]*Group]
+	subscriptionGroups atomic.Pointer[[]*Group]
+	subscriptions      atomic.Pointer[[]*models.Subscription]
+	dnsOverrider       *netfilterTools.PortRemap
 
 	interfaceAliases map[string]string
 }
@@ -47,6 +50,10 @@ func New() *App {
 	}
 	emptyGroups := make([]*Group, 0)
 	a.groups.Store(&emptyGroups)
+	emptySubscriptionGroups := make([]*Group, 0)
+	a.subscriptionGroups.Store(&emptySubscriptionGroups)
+	emptySubscriptions := make([]*models.Subscription, 0)
+	a.subscriptions.Store(&emptySubscriptions)
 	if err := a.LoadConfig(); err != nil {
 		log.Error().Err(err).Msg("failed to load config file")
 	}

@@ -235,6 +235,57 @@ func (a *App) ImportConfig(cfg config.Config) error {
 		}
 	}
 
+	if cfg.Subscriptions != nil {
+		a.ClearSubscriptions()
+
+		for _, subscription := range *cfg.Subscriptions {
+			rules := make([]*models.Rule, len(subscription.Rules))
+			for idx, rule := range subscription.Rules {
+				rules[idx] = &models.Rule{
+					ID:     rule.ID,
+					Name:   rule.Name,
+					Type:   rule.Type,
+					Rule:   rule.Rule,
+					Enable: rule.Enable,
+				}
+			}
+
+			interval := int64(86400)
+			if subscription.Interval != nil && *subscription.Interval > 0 {
+				interval = *subscription.Interval
+			}
+
+			lastUpdate := int64(0)
+			if subscription.LastUpdate != nil {
+				lastUpdate = *subscription.LastUpdate
+			}
+
+			enable := true
+			if subscription.Enable != nil {
+				enable = *subscription.Enable
+			}
+
+			if err := a.AddSubscription(&models.Subscription{
+				ID:         subscription.ID,
+				Name:       subscription.Name,
+				Interface:  subscription.Interface,
+				Enable:     enable,
+				URL:        subscription.URL,
+				LastUpdate: lastUpdate,
+				Interval:   interval,
+				Rules:      rules,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
+	if a.enabled.Load() {
+		if err := a.RebuildSubscriptionGroups(); err != nil {
+			return fmt.Errorf("failed to rebuild subscription groups: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -260,6 +311,31 @@ func (a *App) ExportConfig() config.Config {
 			}
 		}
 		groups[idx] = groupCfg
+	}
+
+	ss := *a.subscriptions.Load()
+	subscriptions := make([]config.Subscription, len(ss))
+	for idx, subscription := range ss {
+		subscriptionCfg := config.Subscription{
+			ID:         subscription.ID,
+			Name:       subscription.Name,
+			Interface:  subscription.Interface,
+			Enable:     &subscription.Enable,
+			URL:        subscription.URL,
+			LastUpdate: &subscription.LastUpdate,
+			Interval:   &subscription.Interval,
+			Rules:      make([]config.Rule, len(subscription.Rules)),
+		}
+		for ruleIdx, rule := range subscription.Rules {
+			subscriptionCfg.Rules[ruleIdx] = config.Rule{
+				ID:     rule.ID,
+				Name:   rule.Name,
+				Type:   rule.Type,
+				Rule:   rule.Rule,
+				Enable: rule.Enable,
+			}
+		}
+		subscriptions[idx] = subscriptionCfg
 	}
 
 	return config.Config{
@@ -309,6 +385,7 @@ func (a *App) ExportConfig() config.Config {
 			ShowAllInterfaces: &a.config.ShowAllInterfaces,
 			LogLevel:          &a.config.LogLevel,
 		},
-		Groups: &groups,
+		Groups:        &groups,
+		Subscriptions: &subscriptions,
 	}
 }

@@ -83,7 +83,7 @@
     globalLoading = true;
 
     const activeInterfaces = interfaceList.filter(
-      (i) => (i.active && i.ip) || (i.active && i.id === "blackhole"),
+      (i) => (i.active && i.ip) || (i.active && i.id === "blackhole") || i.id === "TPROXY",
     );
     for (const i of activeInterfaces) {
       externalIPs[i.id] = "loading";
@@ -264,7 +264,7 @@
           </div>
 
           <div class="interface-main-content">
-            <div class="interface-id">{item.id}</div>
+            <div class="interface-id">{item.id === "TPROXY" ? "redir" : item.id}</div>
             <input
               type="text"
               placeholder={t("Alias (optional)")}
@@ -300,7 +300,8 @@
           </div>
         </div>
 
-        <div class="interface-actions-row">
+        <!-- speedtest button hidden until feature is implemented -->
+        <div class="interface-actions-row" style="display: none">
           <Tooltip value={t("Speed Test")}>
             <Button small variant="ghost" disabled title={t("Speed Test")}>
               <Gauge size={18} />

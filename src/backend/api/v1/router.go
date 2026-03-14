@@ -80,6 +80,7 @@ func NewRouter(a app.Main) chi.Router {
 			r.Get("/", h.ListInterfaces)
 			r.Get("/aliases", h.ListInterfaceAliases)
 			r.Post("/aliases", h.SaveInterfaceAliases)
+			r.Get("/{interfaceID}/external-ip", h.GetExternalIP)
 		})
 		r.Route("/config", func(r chi.Router) {
 			r.Post("/save", h.SaveConfig)

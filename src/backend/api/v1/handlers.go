@@ -1,10 +1,15 @@
 package v1
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"syscall"
+	"time"
 
 	"magitrickle/api/utils"
 	"magitrickle/api/v1/types"
@@ -12,6 +17,7 @@ import (
 	"magitrickle/models"
 	"magitrickle/utils/intID"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
 )
 
@@ -68,9 +74,9 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get interfaces: %w", err).Error())
 		return
 	}
-	res := make([]types.InterfaceRes, len(interfaces)+1)
-	res[0] = types.InterfaceRes{ID: "blackhole", Active: true}
-	for i, iface := range interfaces {
+	res := make([]types.InterfaceRes, 0, len(interfaces)+2)
+	res = append(res, types.InterfaceRes{ID: "blackhole", Active: true})
+	for _, iface := range interfaces {
 		active := iface.Flags&net.FlagUp != 0
 		ip := ""
 		addrs, _ := iface.Addrs()
@@ -80,9 +86,140 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		res[i+1] = types.InterfaceRes{ID: iface.Name, Active: active, IP: ip}
+		res = append(res, types.InterfaceRes{ID: iface.Name, Active: active, IP: ip})
 	}
+	// Add redir-tproxy as a virtual interface entry
+	tproxyPort := h.app.Config().Netfilter.TProxyPort
+	hasTPROXYGroups := false
+	for _, g := range h.app.Groups() {
+		if g.Model().EffectiveRouteMode() == models.RouteModeTProxy && g.Model().Enable {
+			hasTPROXYGroups = true
+			break
+		}
+	}
+	res = append(res, types.InterfaceRes{
+		ID:     models.InterfaceTProxy,
+		Active: hasTPROXYGroups,
+		IP:     fmt.Sprintf("redir-port:%d", tproxyPort),
+	})
 	utils.WriteJson(w, http.StatusOK, types.InterfacesRes{Interfaces: res})
+}
+
+// GetExternalIP checks the external IP for a given interface or redir-tproxy.
+func (h *Handler) GetExternalIP(w http.ResponseWriter, r *http.Request) {
+	ifaceID := chi.URLParam(r, "interfaceID")
+
+	var client *http.Client
+	timeout := 10 * time.Second
+
+	switch {
+	case ifaceID == models.InterfaceTProxy:
+		// Route through mihomo SOCKS5 proxy to check exit IP
+		socksAddr := "127.0.0.1:7890"
+		dialer := &net.Dialer{Timeout: timeout}
+		client = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					// SOCKS5 CONNECT handshake
+					conn, err := dialer.DialContext(ctx, "tcp", socksAddr)
+					if err != nil {
+						return nil, err
+					}
+					// Auth: no auth
+					if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+						conn.Close()
+						return nil, err
+					}
+					buf := make([]byte, 2)
+					if _, err := io.ReadFull(conn, buf); err != nil {
+						conn.Close()
+						return nil, err
+					}
+					if buf[0] != 0x05 || buf[1] != 0x00 {
+						conn.Close()
+						return nil, fmt.Errorf("socks5 auth failed")
+					}
+					// CONNECT request (domain)
+					host, port, _ := net.SplitHostPort(addr)
+					portNum, _ := strconv.Atoi(port)
+					req := []byte{0x05, 0x01, 0x00, 0x03, byte(len(host))}
+					req = append(req, []byte(host)...)
+					req = append(req, byte(portNum>>8), byte(portNum))
+					if _, err := conn.Write(req); err != nil {
+						conn.Close()
+						return nil, err
+					}
+					resp := make([]byte, 10)
+					if _, err := io.ReadFull(conn, resp); err != nil {
+						conn.Close()
+						return nil, err
+					}
+					if resp[1] != 0x00 {
+						conn.Close()
+						return nil, fmt.Errorf("socks5 connect failed: %d", resp[1])
+					}
+					return conn, nil
+				},
+			},
+		}
+	case ifaceID == "blackhole":
+		utils.WriteJson(w, http.StatusOK, map[string]string{"ip": "0.0.0.0"})
+		return
+	default:
+		// Bind to the specific network interface
+		iface, err := net.InterfaceByName(ifaceID)
+		if err != nil {
+			utils.WriteError(w, http.StatusNotFound, fmt.Sprintf("interface not found: %s", ifaceID))
+			return
+		}
+		addrs, _ := iface.Addrs()
+		var localAddr *net.TCPAddr
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+				localAddr = &net.TCPAddr{IP: ipnet.IP}
+				break
+			}
+		}
+		if localAddr == nil {
+			utils.WriteError(w, http.StatusBadRequest, fmt.Sprintf("no IPv4 address on interface %s", ifaceID))
+			return
+		}
+		dialer := &net.Dialer{
+			Timeout:   timeout,
+			LocalAddr: localAddr,
+			Control: func(network, address string, c syscall.RawConn) error {
+				return c.Control(func(fd uintptr) {
+					_ = syscall.BindToDevice(int(fd), ifaceID)
+				})
+			},
+		}
+		client = &http.Client{
+			Timeout: timeout,
+			Transport: &http.Transport{
+				DialContext: dialer.DialContext,
+			},
+		}
+	}
+
+	resp, err := client.Get("https://api.ipify.org")
+	if err != nil {
+		// Fallback to HTTP if TLS fails through redir
+		if strings.Contains(err.Error(), "tls") || ifaceID == models.InterfaceTProxy {
+			resp, err = client.Get("http://api.ipify.org")
+		}
+		if err != nil {
+			utils.WriteError(w, http.StatusBadGateway, fmt.Sprintf("failed to get external IP: %v", err))
+			return
+		}
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	if err != nil {
+		utils.WriteError(w, http.StatusBadGateway, "failed to read response")
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, map[string]string{"ip": strings.TrimSpace(string(body))})
 }
 
 // ListInterfaceAliases

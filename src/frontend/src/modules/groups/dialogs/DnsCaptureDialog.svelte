@@ -2,11 +2,14 @@
   import { Dialog } from "bits-ui";
   import { fade } from "svelte/transition";
 
+  import { getContext } from "svelte";
   import Button from "../../../components/ui/Button.svelte";
-  import { Add, Copy, Radio, Square } from "../../../components/ui/icons";
+  import { Add, Clear, Copy, Radio, Square } from "../../../components/ui/icons";
   import { t } from "../../../data/locale.svelte";
   import { fetcher } from "../../../utils/fetcher";
   import { toast } from "../../../utils/events";
+  import type { Group, Subscription } from "../../../types";
+  import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
 
   type CapturedDomain = {
     domain: string;
@@ -28,11 +31,59 @@
 
   let { open = $bindable(), onclose, onadddomains }: Props = $props();
 
+  const store = getContext<GroupsStore>(GROUPS_STORE_CONTEXT);
+
   let active = $state(false);
   let domains = $state<CapturedDomain[]>([]);
   let liveCount = $state(0);
   let pollTimer = $state<ReturnType<typeof setInterval> | null>(null);
   let selectedDomains = $state<Set<string>>(new Set());
+  let subscriptions = $state<Subscription[]>([]);
+
+  /** Check if domain is covered by any existing rule in groups or subscriptions */
+  function isDomainKnown(domain: string): boolean {
+    const d = domain.toLowerCase();
+    const groups = store.data as Group[];
+    for (const group of groups) {
+      if (!group.enable) continue;
+      for (const rule of group.rules) {
+        if (!rule.enable || !rule.rule) continue;
+        if (matchesDomainRule(d, rule.rule.toLowerCase(), rule.type)) return true;
+      }
+    }
+    for (const sub of subscriptions) {
+      if (!sub.enable) continue;
+      for (const rule of sub.rules) {
+        if (!rule.enable || !rule.rule) continue;
+        if (matchesDomainRule(d, rule.rule.toLowerCase(), rule.type)) return true;
+      }
+    }
+    return false;
+  }
+
+  function matchesDomainRule(domain: string, pattern: string, type: string): boolean {
+    switch (type) {
+      case "domain":
+        return domain === pattern;
+      case "namespace":
+        return domain === pattern || domain.endsWith("." + pattern);
+      case "wildcard":
+        return wildcardMatch(domain, pattern);
+      default:
+        return false;
+    }
+  }
+
+  function wildcardMatch(str: string, pattern: string): boolean {
+    const regex = new RegExp(
+      "^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$",
+    );
+    return regex.test(str);
+  }
+
+  function selectNew() {
+    selectedDomains = new Set(domains.filter((d) => !isDomainKnown(d.domain)).map((d) => d.domain));
+  }
 
   async function fetchStatus(withDomains: boolean) {
     try {
@@ -106,6 +157,24 @@
     selectedDomains = new Set();
   }
 
+  function copyToClipboard(text: string): boolean {
+    // Fallback for HTTP (navigator.clipboard requires secure context)
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      // ignore
+    }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
   async function copySelected() {
     const text = [...selectedDomains].join("\n");
     if (!text) return;
@@ -113,8 +182,18 @@
       await navigator.clipboard.writeText(text);
       toast.success(t("Entries copied"));
     } catch {
-      toast.error(t("Failed to copy entries"));
+      if (copyToClipboard(text)) {
+        toast.success(t("Entries copied"));
+      } else {
+        toast.error(t("Failed to copy entries"));
+      }
     }
+  }
+
+  function clearResults() {
+    domains = [];
+    selectedDomains = new Set();
+    liveCount = 0;
   }
 
   function addSelected() {
@@ -129,8 +208,18 @@
     }
   }
 
+  async function loadSubscriptions() {
+    try {
+      const res = await fetcher.get<{ subscriptions: Subscription[] }>("/subscriptions");
+      subscriptions = res?.subscriptions ?? [];
+    } catch {
+      subscriptions = [];
+    }
+  }
+
   $effect(() => {
     if (open) {
+      loadSubscriptions();
       fetchStatus(true).then(() => {
         if (active) startPolling();
       });
@@ -180,6 +269,7 @@
               <div class="domain-actions">
                 <button class="link-btn" onclick={selectAll}>{t("All")}</button>
                 <button class="link-btn" onclick={selectNone}>{t("Reset")}</button>
+                <button class="link-btn" onclick={selectNew}>{t("New only")}</button>
                 <span class="domain-count">
                   {selectedDomains.size} / {domains.length}
                 </span>
@@ -190,6 +280,10 @@
                 >
                   <Copy size={14} />
                   {t("Copy")}
+                </button>
+                <button class="link-btn" onclick={clearResults}>
+                  <Clear size={14} />
+                  {t("Clear")}
                 </button>
               </div>
 

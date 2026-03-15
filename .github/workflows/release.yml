@@ -18,18 +18,17 @@ jobs:
       - name: Determine next version
         id: version
         run: |
-          LATEST=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-badigit\.' | head -1)
+          LATEST=$(git tag -l '*-badigit.*' --sort=-v:refname | head -1)
           echo "Latest badigit tag: ${LATEST:-none}"
 
           if [ -z "$LATEST" ]; then
-            # First release — base off upstream tag
-            UPSTREAM=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
-            NEXT="${UPSTREAM:-0.5.2}-badigit.1"
+            UPSTREAM=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -vE 'badigit' | head -1)
+            NEXT="${UPSTREAM:-0.5.2}-badigit.2"
           else
-            # Increment badigit.N
-            PREFIX="${LATEST%-*}"   # e.g. 0.5.2-badigit
-            NUM="${LATEST##*.}"     # e.g. 1
-            NEXT="${PREFIX}.$(( NUM + 1 ))"
+            # e.g. 0.5.2-badigit.3 → base=0.5.2-badigit num=3
+            NUM="${LATEST##*-badigit.}"
+            BASE="${LATEST%-badigit.*}-badigit"
+            NEXT="${BASE}.$(( NUM + 1 ))"
           fi
 
           echo "tag=${NEXT}" >> "$GITHUB_OUTPUT"
@@ -45,7 +44,7 @@ jobs:
       - name: Generate changelog
         id: changelog
         run: |
-          PREV=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-badigit\.' | sed -n '2p')
+          PREV=$(git tag -l '*-badigit.*' --sort=-v:refname | sed -n '2p')
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..HEAD"
           else

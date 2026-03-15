@@ -91,6 +91,11 @@ func NewRouter(a app.Main) chi.Router {
 		r.Route("/config", func(r chi.Router) {
 			r.Post("/save", h.SaveConfig)
 		})
+		r.Route("/dns-capture", func(r chi.Router) {
+			r.Post("/start", h.StartDNSCapture)
+			r.Post("/stop", h.StopDNSCapture)
+			r.Get("/status", h.GetDNSCaptureStatus)
+		})
 		r.Route("/hooks", func(r chi.Router) {
 			r.Post("/netfilterd", h.NetfilterDHook)
 		})

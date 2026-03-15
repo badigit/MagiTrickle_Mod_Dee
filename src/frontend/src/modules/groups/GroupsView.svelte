@@ -10,10 +10,11 @@
   import { t } from "../../data/locale.svelte";
   import GroupPanel from "./components/GroupPanel.svelte";
   import Search from "./components/Search.svelte";
+  import DnsCaptureDialog from "./dialogs/DnsCaptureDialog.svelte";
   import ImportConfigDialog from "./dialogs/ImportConfigDialog.svelte";
   import ImportRulesDialog from "./dialogs/ImportRulesDialog.svelte";
 
-  import { Add, Check, Clear, Export, Import, Save, Sigma, ToggleRight } from "../../components/ui/icons";
+  import { Add, Check, Clear, Export, Import, Radio, Save, Sigma, ToggleRight } from "../../components/ui/icons";
   import { droppable } from "../../lib/dnd";
   import { toast } from "../../utils/events";
   import { parseConfig, type Group, type Rule } from "../../types";
@@ -39,6 +40,8 @@
 
   const conflictsStore = new ConflictsStore(store);
   setContext(CONFLICTS_STORE_CONTEXT, conflictsStore);
+
+  let dnsCaptureOpen = $state(false);
 
   let importRulesModal = $state<{ open: boolean; groupIndex: number | null }>({
     open: false,
@@ -241,6 +244,11 @@
           <Save size={22} />
         </Button>
       </Tooltip>
+      <Tooltip value={t("DNS Capture")}>
+        <Button onclick={() => (dnsCaptureOpen = true)}>
+          <Radio size={22} />
+        </Button>
+      </Tooltip>
       <Tooltip value={t("Import Config")}>
         <input type="file" id="import-config" hidden accept=".mtrickle" onchange={importConfig} />
         <Button onclick={() => document.getElementById("import-config")!.click()}>
@@ -373,6 +381,11 @@
   group_index={importRulesModal.groupIndex}
   on:close={closeImportRulesModal}
   on:import={handleImportRules}
+/>
+
+<DnsCaptureDialog
+  bind:open={dnsCaptureOpen}
+  onclose={() => (dnsCaptureOpen = false)}
 />
 
 <ImportConfigDialog

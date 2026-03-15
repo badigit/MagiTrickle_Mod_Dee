@@ -54,3 +54,6 @@ export { default as History } from "lucide-svelte/icons/history";
 export { default as Gauge } from "lucide-svelte/icons/gauge";
 export { default as Network } from "lucide-svelte/icons/network";
 export { default as RSS } from "lucide-svelte/icons/rss";
+export { default as Radio } from "lucide-svelte/icons/radio";
+export { default as Square } from "lucide-svelte/icons/square";
+export { default as Copy } from "lucide-svelte/icons/copy";

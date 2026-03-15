@@ -40,6 +40,8 @@ type App struct {
 	dnsOverrider       *netfilterTools.PortRemap
 
 	interfaceAliases map[string]string
+
+	dnsCapture *DNSCapture
 }
 
 // New создаёт новый экземпляр App
@@ -47,6 +49,7 @@ func New() *App {
 	a := &App{
 		config:           constant.DefaultAppConfig,
 		interfaceAliases: make(map[string]string),
+		dnsCapture:       NewDNSCapture(),
 	}
 	emptyGroups := make([]*Group, 0)
 	a.groups.Store(&emptyGroups)
@@ -172,6 +175,11 @@ func (a *App) InterfaceAliases() map[string]string {
 		aliases[k] = v
 	}
 	return aliases
+}
+
+// DNSCapture возвращает экземпляр DNSCapture.
+func (a *App) DNSCapture() app.DNSCapturer {
+	return a.dnsCapture
 }
 
 // SetInterfaceAliases replaces configured interface aliases.

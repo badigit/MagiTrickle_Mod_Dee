@@ -1,0 +1,63 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - release
+
+jobs:
+  create_release:
+    name: Create release from tag
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Determine next version
+        id: version
+        run: |
+          LATEST=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-badigit\.' | head -1)
+          echo "Latest badigit tag: ${LATEST:-none}"
+
+          if [ -z "$LATEST" ]; then
+            # First release — base off upstream tag
+            UPSTREAM=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1)
+            NEXT="${UPSTREAM:-0.5.2}-badigit.1"
+          else
+            # Increment badigit.N
+            PREFIX="${LATEST%-*}"   # e.g. 0.5.2-badigit
+            NUM="${LATEST##*.}"     # e.g. 1
+            NEXT="${PREFIX}.$(( NUM + 1 ))"
+          fi
+
+          echo "tag=${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Next release: ${NEXT}"
+
+      - name: Create tag and push
+        run: |
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin "${{ steps.version.outputs.tag }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV=$(git tag --sort=-v:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-badigit\.' | sed -n '2p')
+          if [ -n "$PREV" ]; then
+            RANGE="${PREV}..HEAD"
+          else
+            RANGE="HEAD~20..HEAD"
+          fi
+          git log "$RANGE" --pretty=format:"- %s" --no-merges > /tmp/changelog.md
+          cat /tmp/changelog.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          body_path: /tmp/changelog.md
+          token: ${{ secrets.RELEASE_TOKEN }}

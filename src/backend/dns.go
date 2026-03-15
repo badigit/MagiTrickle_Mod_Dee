@@ -77,6 +77,8 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 			Int("qclass", int(q.Qclass)).
 			Int("qtype", int(q.Qtype)).
 			Msg("dns request")
+
+		a.dnsCapture.Record(q.Name)
 	}
 
 	if a.config.DNSProxy.DisableFakePTR {

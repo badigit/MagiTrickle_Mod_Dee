@@ -645,6 +645,24 @@ func (h *Handler) PutRule(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// StartDNSCapture запускает захват DNS-запросов.
+func (h *Handler) StartDNSCapture(w http.ResponseWriter, r *http.Request) {
+	h.app.DNSCapture().Start()
+	utils.WriteJson(w, http.StatusOK, h.app.DNSCapture().Status(false))
+}
+
+// StopDNSCapture останавливает захват DNS-запросов.
+func (h *Handler) StopDNSCapture(w http.ResponseWriter, r *http.Request) {
+	h.app.DNSCapture().Stop()
+	utils.WriteJson(w, http.StatusOK, h.app.DNSCapture().Status(true))
+}
+
+// GetDNSCaptureStatus возвращает статус захвата DNS-запросов.
+func (h *Handler) GetDNSCaptureStatus(w http.ResponseWriter, r *http.Request) {
+	withDomains := r.URL.Query().Get("domains") == "true"
+	utils.WriteJson(w, http.StatusOK, h.app.DNSCapture().Status(withDomains))
+}
+
 // DeleteRule
 //
 //	@Summary		Удалить правило

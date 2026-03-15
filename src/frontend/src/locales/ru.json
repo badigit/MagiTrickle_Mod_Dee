@@ -151,5 +151,11 @@
   "interface.active": "Активен",
   "interface.inactive": "(неактивный)",
   "interface.ip": "IP-адрес",
-  "subscription": "подписка"
+  "subscription": "подписка",
+  "DNS Capture": "Захват DNS",
+  "Start Capture": "Начать захват",
+  "Stop Capture": "Остановить",
+  "Captured": "Захвачено",
+  "Copy": "Копировать",
+  "DNS Capture Hint": "Нажмите «Начать захват», затем откройте нужные приложения. После остановки вы увидите список доменов."
 }

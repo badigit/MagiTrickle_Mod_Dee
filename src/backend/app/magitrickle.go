@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net"
+	"time"
 
 	"magitrickle/config"
 	"magitrickle/models"
@@ -10,6 +11,28 @@ import (
 
 	"github.com/vishvananda/netlink"
 )
+
+// CapturedDomain — захваченный домен с количеством запросов.
+type CapturedDomain struct {
+	Domain string `json:"domain"`
+	Count  int    `json:"count"`
+}
+
+// CaptureStatus — текущий статус захвата DNS.
+type CaptureStatus struct {
+	Active    bool             `json:"active"`
+	StartedAt *time.Time       `json:"started_at,omitempty"`
+	Count     int              `json:"count"`
+	Domains   []CapturedDomain `json:"domains,omitempty"`
+}
+
+// DNSCapturer — интерфейс для захвата DNS-запросов.
+type DNSCapturer interface {
+	Start()
+	Stop()
+	IsActive() bool
+	Status(withDomains bool) CaptureStatus
+}
 
 type Main interface {
 	Config() models.AppConfig
@@ -33,6 +56,7 @@ type Main interface {
 	RemoveSubscriptionByIndex(idx int)
 	RebuildSubscriptionGroups() error
 	ForceCommitIPTables() error
+	DNSCapture() DNSCapturer
 	Start(ctx context.Context) (err error)
 }
 

@@ -48,9 +48,22 @@ jobs:
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..HEAD"
           else
-            RANGE="HEAD~20..HEAD"
+            RANGE="HEAD~30..HEAD"
           fi
-          git log "$RANGE" --pretty=format:"- %s" --no-merges > /tmp/changelog.md
+
+          {
+            echo "## Что нового"
+            echo ""
+            git log "$RANGE" --pretty=format:"- %s" --no-merges
+            echo ""
+            echo ""
+            echo "---"
+            echo "Установка / обновление:"
+            echo '```sh'
+            echo 'opkg update && opkg install wget-ssl ca-certificates'
+            echo 'wget -qO- https://raw.githubusercontent.com/${{ github.repository }}/mod_badigit/scripts/install.sh | sh'
+            echo '```'
+          } > /tmp/changelog.md
           cat /tmp/changelog.md
 
       - name: Create GitHub Release

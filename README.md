@@ -17,24 +17,20 @@ MagiTrickle (произносится как *Мэджитрикл*) – ути�
 
 ## Установка
 
-1. Добавление репозитория в пакетный менеджер:
+> Это форк [MagiTrickle](https://gitlab.com/magitrickle/magitrickle) с дополнительными возможностями: redir-tproxy, подписки на правила, захват DNS-запросов и др.
+
+1. Установка зависимостей (если ещё не установлены):
 ```shell
-wget -qO- http://bin.magitrickle.dev/packages/add_repo.sh | sh
+opkg update && opkg install wget-ssl ca-certificates
 ```
-2. Установка пакета:
+2. Установка / обновление:
 ```shell
-opkg update && opkg install magitrickle
-```
-3. Запуск пакета:
-```shell
-/opt/etc/init.d/S99magitrickle start
+wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle_mod_badigit/mod_badigit/scripts/install.sh | sh
 ```
 
-Дальнейшее обновление можно осуществлять с помощью:
-```shell
-opkg update && opkg install magitrickle
-/opt/etc/init.d/S99magitrickle restart
-```
+Скрипт автоматически определяет архитектуру, скачивает последнюю версию с GitHub и устанавливает.
+
+Для повторного обновления достаточно выполнить только шаг 2.
 
 ## Описание типов правил
 

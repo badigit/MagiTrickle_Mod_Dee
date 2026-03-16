@@ -159,5 +159,11 @@
   "Copy": "Копировать",
   "Clear": "Очистить",
   "New only": "Только новые",
+  "Cached IPs": "IP в кэше",
+  "TPROXY Status": "Статус TPROXY",
+  "TPROXY port": "Порт TPROXY",
+  "Listening": "Слушает",
+  "Not listening": "Не слушает",
+  "Not configured": "Не настроен",
   "DNS Capture Hint": "Нажмите «Начать захват», затем откройте нужные приложения. После остановки вы увидите список доменов."
 }

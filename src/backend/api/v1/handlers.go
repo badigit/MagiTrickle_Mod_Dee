@@ -244,12 +244,26 @@ func (h *Handler) SaveConfig(w http.ResponseWriter, r *http.Request) {
 //	@Router			/api/v1/groups [get]
 func (h *Handler) GetGroups(w http.ResponseWriter, r *http.Request) {
 	withRules := r.URL.Query().Get("with_rules") == "true"
+	withIPCount := r.URL.Query().Get("with_ip_count") == "true"
 	appGroups := h.app.Groups()
 	modelGroups := make([]*models.Group, len(appGroups))
 	for i, g := range appGroups {
 		modelGroups[i] = g.Model()
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromGroups(modelGroups, withRules))
+	res := RespFromGroups(modelGroups, withRules)
+	if withIPCount && res.Groups != nil {
+		for i, g := range appGroups {
+			count := 0
+			if ipv4, err := g.ListIPv4Subnets(); err == nil {
+				count += len(ipv4)
+			}
+			if ipv6, err := g.ListIPv6Subnets(); err == nil {
+				count += len(ipv6)
+			}
+			(*res.Groups)[i].IPCount = &count
+		}
+	}
+	utils.WriteJson(w, http.StatusOK, res)
 }
 
 // PutGroups
@@ -661,6 +675,42 @@ func (h *Handler) StopDNSCapture(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) GetDNSCaptureStatus(w http.ResponseWriter, r *http.Request) {
 	withDomains := r.URL.Query().Get("domains") == "true"
 	utils.WriteJson(w, http.StatusOK, h.app.DNSCapture().Status(withDomains))
+}
+
+// GetTProxyStatus возвращает диагностику TPROXY.
+func (h *Handler) GetTProxyStatus(w http.ResponseWriter, r *http.Request) {
+	port := h.app.Config().Netfilter.TProxyPort
+	res := types.TProxyStatusRes{
+		Configured: port > 0,
+		Port:       port,
+	}
+	if port > 0 {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+		if err == nil {
+			conn.Close()
+			res.Listening = true
+		}
+		for _, g := range h.app.Groups() {
+			m := g.Model()
+			if m.EffectiveRouteMode() != models.RouteModeTProxy {
+				continue
+			}
+			ipCount := 0
+			if ipv4, err := g.ListIPv4Subnets(); err == nil {
+				ipCount += len(ipv4)
+			}
+			if ipv6, err := g.ListIPv6Subnets(); err == nil {
+				ipCount += len(ipv6)
+			}
+			res.Groups = append(res.Groups, types.TProxyGroupStatus{
+				ID:      m.ID,
+				Name:    m.Name,
+				Enable:  m.Enable,
+				IPCount: ipCount,
+			})
+		}
+	}
+	utils.WriteJson(w, http.StatusOK, res)
 }
 
 // DeleteRule

@@ -157,13 +157,14 @@
     selectedDomains = new Set();
   }
 
-  function copyToClipboard(text: string): boolean {
-    // Fallback for HTTP (navigator.clipboard requires secure context)
+  function copyViaTextarea(text: string): boolean {
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.style.position = "fixed";
+    ta.style.left = "-9999px";
     ta.style.opacity = "0";
     document.body.appendChild(ta);
+    ta.focus();
     ta.select();
     let ok = false;
     try {
@@ -175,18 +176,15 @@
     return ok;
   }
 
-  async function copySelected() {
+  function copySelected() {
     const text = [...selectedDomains].join("\n");
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
+    // Use textarea method directly — works on HTTP without secure context,
+    // and executes synchronously within the user gesture
+    if (copyViaTextarea(text)) {
       toast.success(t("Entries copied"));
-    } catch {
-      if (copyToClipboard(text)) {
-        toast.success(t("Entries copied"));
-      } else {
-        toast.error(t("Failed to copy entries"));
-      }
+    } else {
+      toast.error(t("Failed to copy entries"));
     }
   }
 

@@ -25,6 +25,14 @@
   // Группы загружаются отдельно для статистики (InterfacesView — изолированный модуль)
   let groups = $state<Group[]>([]);
 
+  type TProxyStatus = {
+    configured: boolean;
+    port: number;
+    listening: boolean;
+    groups: { id: string; name: string; enable: boolean; ip_count: number }[];
+  };
+  let tproxyStatus = $state<TProxyStatus | null>(null);
+
   let stats = $derived.by(() => {
     const global = {
       groups: groups.length,
@@ -70,6 +78,7 @@
       groups = [];
     }
     refreshList();
+    fetchTProxyStatus();
   });
 
   $effect(() => {
@@ -103,6 +112,14 @@
       toast.success(t("External IPs updated"));
     } finally {
       globalLoading = false;
+    }
+  }
+
+  async function fetchTProxyStatus() {
+    try {
+      tproxyStatus = await fetcher.get<TProxyStatus>("/system/tproxy-status");
+    } catch {
+      tproxyStatus = null;
     }
   }
 
@@ -278,6 +295,18 @@
                 <div class="interface-ip" title={t("interface.ip")}>{item.ip}</div>
               {:else if item.id === "blackhole"}
                 <div class="interface-ip" title={t("interface.ip")}>0.0.0.0</div>
+              {/if}
+
+              {#if item.id === "TPROXY" && tproxyStatus?.configured}
+                <div class="tproxy-status" class:listening={tproxyStatus.listening} class:not-listening={!tproxyStatus.listening}>
+                  <span class="tproxy-dot"></span>
+                  {tproxyStatus.listening ? t("Listening") : t("Not listening")}
+                  {#if tproxyStatus.groups.length > 0}
+                    <span class="tproxy-ips">
+                      — {tproxyStatus.groups.reduce((s, g) => s + g.ip_count, 0)} IP
+                    </span>
+                  {/if}
+                </div>
               {/if}
 
               {#if externalIPs[item.id] === "loading"}
@@ -501,6 +530,36 @@
     font-size: 0.8rem;
     color: var(--text-2);
     font-family: monospace;
+  }
+
+  .tproxy-status {
+    font-size: 0.8rem;
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--text-2);
+  }
+
+  .tproxy-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .tproxy-status.listening .tproxy-dot {
+    background: #10b981;
+    box-shadow: 0 0 4px rgba(16, 185, 129, 0.5);
+  }
+
+  .tproxy-status.not-listening .tproxy-dot {
+    background: #ef4444;
+    box-shadow: 0 0 4px rgba(239, 68, 68, 0.4);
+  }
+
+  .tproxy-ips {
+    color: var(--text-2);
+    opacity: 0.8;
   }
 
   .interface-external-ip {

@@ -27,5 +27,20 @@ type GroupRes struct {
 	Color     string   `json:"color" example:"#ffffff"`
 	Interface string   `json:"interface" example:"nwg0"`
 	Enable    bool     `json:"enable" example:"true"`
+	IPCount   *int     `json:"ip_count,omitempty"`
 	RulesRes
+}
+
+type TProxyStatusRes struct {
+	Configured bool                `json:"configured"`
+	Port       uint16              `json:"port"`
+	Listening  bool                `json:"listening"`
+	Groups     []TProxyGroupStatus `json:"groups"`
+}
+
+type TProxyGroupStatus struct {
+	ID      intID.ID `json:"id" swaggertype:"string"`
+	Name    string   `json:"name"`
+	Enable  bool     `json:"enable"`
+	IPCount int      `json:"ip_count"`
 }

@@ -96,6 +96,7 @@ func NewRouter(a app.Main) chi.Router {
 			r.Post("/stop", h.StopDNSCapture)
 			r.Get("/status", h.GetDNSCaptureStatus)
 		})
+		r.Get("/tproxy-status", h.GetTProxyStatus)
 		r.Route("/hooks", func(r chi.Router) {
 			r.Post("/netfilterd", h.NetfilterDHook)
 		})

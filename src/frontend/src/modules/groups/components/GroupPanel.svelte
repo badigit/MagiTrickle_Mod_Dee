@@ -315,6 +315,11 @@
             class="group-name"
             bind:value={group.name}
           />
+          {#if store.ipCounts[group.id] != null && store.ipCounts[group.id] > 0}
+            <Tooltip value={`${t("Cached IPs")}: ${store.ipCounts[group.id]}`}>
+              <span class="ip-count-badge">{store.ipCounts[group.id]}</span>
+            </Tooltip>
+          {/if}
           <ConflictBadge {group_index} />
         </div>
 
@@ -578,6 +583,20 @@
       outline: none;
       border-bottom: 1px solid var(--accent);
     }
+  }
+
+  .ip-count-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-2);
+    background: var(--bg-medium);
+    border: 1px solid var(--bg-light-extra);
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.35rem;
+    white-space: nowrap;
+    cursor: default;
   }
 
   .group-actions {

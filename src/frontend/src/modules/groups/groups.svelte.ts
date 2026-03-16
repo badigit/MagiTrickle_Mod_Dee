@@ -110,6 +110,9 @@ export class GroupsStore {
     this.groupsCount > 0 && this.selectedGroupsCount === this.groupsCount,
   );
 
+  ipCounts = $state<Record<string, number>>({});
+  #ipCountTimer: number | null = null;
+
   finishedGroupsCount = $state(0);
   fetchError = $state(false);
   dataLoaded = $state(false);
@@ -239,6 +242,7 @@ export class GroupsStore {
   }
 
   destroy() {
+    this.stopIPCountPolling();
     if (typeof window !== "undefined") {
       window.removeEventListener("keydown", this.handleSaveShortcut);
     }
@@ -272,6 +276,36 @@ export class GroupsStore {
       window.addEventListener("keydown", this.handleSaveShortcut);
     }
   };
+
+  fetchIPCounts = async () => {
+    try {
+      const res = await fetcher.get<{ groups: { id: string; ip_count?: number }[] }>(
+        "/groups?with_ip_count=true",
+      );
+      if (res?.groups) {
+        const counts: Record<string, number> = {};
+        for (const g of res.groups) {
+          if (g.ip_count != null) counts[g.id] = g.ip_count;
+        }
+        this.ipCounts = counts;
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  startIPCountPolling(intervalMs = 15000) {
+    this.stopIPCountPolling();
+    this.fetchIPCounts();
+    this.#ipCountTimer = window.setInterval(() => this.fetchIPCounts(), intervalMs);
+  }
+
+  stopIPCountPolling() {
+    if (this.#ipCountTimer) {
+      clearInterval(this.#ipCountTimer);
+      this.#ipCountTimer = null;
+    }
+  }
 
   handleSaveShortcut = (event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {

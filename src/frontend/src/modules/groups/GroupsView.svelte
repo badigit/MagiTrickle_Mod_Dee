@@ -220,7 +220,7 @@
 
   onMount(() => {
     void aliases.load();
-    void store.mount();
+    void store.mount().then(() => store.startIPCountPolling());
   });
 
   onDestroy(() => {

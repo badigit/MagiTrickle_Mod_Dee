@@ -157,31 +157,33 @@
     selectedDomains = new Set();
   }
 
-  function copyViaTextarea(text: string): boolean {
+  let dialogEl: HTMLElement | undefined = $state();
+
+  function copySelected() {
+    const text = [...selectedDomains].join("\n");
+    if (!text) return;
+
+    // Create textarea inside dialog to bypass modal focus trap
+    const container = dialogEl ?? document.body;
     const ta = document.createElement("textarea");
     ta.value = text;
-    ta.style.position = "fixed";
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
     ta.style.left = "-9999px";
-    ta.style.opacity = "0";
-    document.body.appendChild(ta);
+    ta.style.top = "0";
+    container.appendChild(ta);
     ta.focus();
     ta.select();
+
     let ok = false;
     try {
       ok = document.execCommand("copy");
     } catch {
       // ignore
     }
-    document.body.removeChild(ta);
-    return ok;
-  }
+    container.removeChild(ta);
 
-  function copySelected() {
-    const text = [...selectedDomains].join("\n");
-    if (!text) return;
-    // Use textarea method directly — works on HTTP without secure context,
-    // and executes synchronously within the user gesture
-    if (copyViaTextarea(text)) {
+    if (ok) {
       toast.success(t("Entries copied"));
     } else {
       toast.error(t("Failed to copy entries"));
@@ -239,7 +241,7 @@
   >
     {#snippet child({ props, open: isOpen })}
       {#if isOpen}
-        <div {...props} class="modal" in:fade={{ duration: 120 }} out:fade={{ duration: 120 }}>
+        <div {...props} class="modal" bind:this={dialogEl} in:fade={{ duration: 120 }} out:fade={{ duration: 120 }}>
           <Dialog.Title class="title">{t("DNS Capture")}</Dialog.Title>
           <Dialog.Close class="close">
             <Add size={22} style="transform:rotate(45deg)" />

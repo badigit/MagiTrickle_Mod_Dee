@@ -215,12 +215,17 @@
             <Grip />
           </div>
           <div class="subscription-info">
-            <input
-              type="text"
-              placeholder={t("subscription name...")}
-              class="subscription-name"
-              bind:value={subscription.name}
-            />
+            <div class="subscription-name-row">
+              <input
+                type="text"
+                placeholder={t("subscription name...")}
+                class="subscription-name"
+                bind:value={subscription.name}
+              />
+              {#if subscription.rules.length > 0}
+                <span class="rules-count-badge">{subscription.rules.length}</span>
+              {/if}
+            </div>
             <div class="subscription-url" title={subscription.url}>
               <span class="url-line">
                 <span class="icon-wrap"><Link size={14} /></span>
@@ -454,6 +459,13 @@
     opacity: 0.7;
   }
 
+  .subscription-name-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+  }
+
   .subscription-name {
     border: none;
     background-color: transparent;
@@ -463,12 +475,27 @@
     color: var(--text);
     border-bottom: 1px solid transparent;
     margin-left: 0.4rem;
-    width: 100%;
+    flex: 1;
+    min-width: 0;
 
     &:focus-visible {
       outline: none;
       border-bottom: 1px solid var(--accent);
     }
+  }
+
+  .rules-count-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-2);
+    background: var(--bg-medium);
+    border: 1px solid var(--bg-light-extra);
+    padding: 0.1rem 0.4rem;
+    border-radius: 0.35rem;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
   .subscription-actions {

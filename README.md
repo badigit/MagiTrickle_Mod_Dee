@@ -19,18 +19,11 @@ MagiTrickle (произносится как *Мэджитрикл*) – ути�
 
 > Это форк [MagiTrickle](https://gitlab.com/magitrickle/magitrickle) с дополнительными возможностями: redir-tproxy, подписки на правила, захват DNS-запросов и др.
 
-1. Установка зависимостей (если ещё не установлены):
 ```shell
-opkg update && opkg install wget-ssl ca-certificates
-```
-2. Установка / обновление:
-```shell
-wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle_mod_badigit/mod_badigit/scripts/install.sh | sh
+opkg update && opkg install wget-ssl ca-certificates && wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle_mod_badigit/mod_badigit/scripts/install.sh | sh
 ```
 
-Скрипт автоматически определяет архитектуру, скачивает последнюю версию с GitHub и устанавливает.
-
-Для повторного обновления достаточно выполнить только шаг 2.
+Скрипт автоматически определяет архитектуру, скачивает последнюю версию с GitHub и устанавливает. Для повторного обновления — та же команда.
 
 ## Описание типов правил
 

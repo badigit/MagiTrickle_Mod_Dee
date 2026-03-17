@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getContext } from "svelte";
+  import { getContext, tick } from "svelte";
 
   import Button from "../../../components/ui/Button.svelte";
   import Select from "../../../components/ui/Select.svelte";
@@ -10,7 +10,7 @@
   import { Delete, Grip } from "../../../components/ui/icons";
   import { dnd_state, draggable, droppable } from "../../../lib/dnd";
   import { RULE_TYPES, type Rule } from "../../../types";
-  import { VALIDATOP_MAP } from "../../../utils/rule-validators";
+  import { VALIDATOP_MAP, extractDomainFromUrl } from "../../../utils/rule-validators";
   import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
   import { ConflictRulePopover, CONFLICTS_STORE_CONTEXT, type ConflictsStore } from "../../conflicts/index";
 
@@ -40,6 +40,16 @@
   let hasConflict = $derived(conflictsStore?.conflictsByRuleId.has(rule_id) ?? false);
 
   let input: HTMLInputElement;
+
+  function handlePatternPaste(e: ClipboardEvent) {
+    const pasted = e.clipboardData?.getData("text/plain") ?? "";
+    const domain = extractDomainFromUrl(pasted);
+    if (domain !== pasted.trim()) {
+      e.preventDefault();
+      rule.rule = domain;
+      tick().then(patternValidation);
+    }
+  }
 
   function patternValidation() {
     if (
@@ -208,6 +218,7 @@
         bind:this={input}
         oninput={patternValidation}
         onfocusout={patternValidation}
+        onpaste={handlePatternPaste}
       />
     </div>
     <div class="actions">

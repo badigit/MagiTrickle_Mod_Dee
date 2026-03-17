@@ -315,7 +315,7 @@
             class="group-name"
             bind:value={group.name}
           />
-          {#if store.ipCounts[group.id] != null && store.ipCounts[group.id] > 0}
+          {#if store.ipCountsVisible && store.ipCounts[group.id] != null && store.ipCounts[group.id] > 0}
             <Tooltip value={`${t("Cached IPs")}: ${store.ipCounts[group.id]}`}>
               <span class="ip-count-badge">{store.ipCounts[group.id]}</span>
             </Tooltip>

@@ -111,7 +111,8 @@ export class GroupsStore {
   );
 
   ipCounts = $state<Record<string, number>>({});
-  #ipCountTimer: number | null = null;
+  ipCountsVisible = $state(false);
+  ipCountsLoading = $state(false);
 
   finishedGroupsCount = $state(0);
   fetchError = $state(false);
@@ -242,7 +243,6 @@ export class GroupsStore {
   }
 
   destroy() {
-    this.stopIPCountPolling();
     if (typeof window !== "undefined") {
       window.removeEventListener("keydown", this.handleSaveShortcut);
     }
@@ -257,6 +257,9 @@ export class GroupsStore {
     this.finishedGroupsCount = 0;
     this.fetchError = false;
     this.clearGroupSelection();
+    this.ipCounts = {};
+    this.ipCountsVisible = false;
+    this.ipCountsLoading = false;
     try {
       const fetched =
         (await fetcher.get<{ groups: Group[] }>("/groups?with_rules=true"))?.groups ?? [];
@@ -278,6 +281,8 @@ export class GroupsStore {
   };
 
   fetchIPCounts = async () => {
+    if (this.ipCountsLoading) return;
+    this.ipCountsLoading = true;
     try {
       const res = await fetcher.get<{ groups: { id: string; ip_count?: number }[] }>(
         "/groups?with_ip_count=true",
@@ -289,23 +294,13 @@ export class GroupsStore {
         }
         this.ipCounts = counts;
       }
+      this.ipCountsVisible = true;
     } catch {
       // ignore
+    } finally {
+      this.ipCountsLoading = false;
     }
   };
-
-  startIPCountPolling(intervalMs = 15000) {
-    this.stopIPCountPolling();
-    this.fetchIPCounts();
-    this.#ipCountTimer = window.setInterval(() => this.fetchIPCounts(), intervalMs);
-  }
-
-  stopIPCountPolling() {
-    if (this.#ipCountTimer) {
-      clearInterval(this.#ipCountTimer);
-      this.#ipCountTimer = null;
-    }
-  }
 
   handleSaveShortcut = (event: KeyboardEvent) => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {

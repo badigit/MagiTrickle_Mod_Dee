@@ -13,6 +13,40 @@ on:
     types: [published]
 
 jobs:
+  prepare:
+    name: Prepare build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      configs: ${{ steps.collect.outputs.configs }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Build config matrix
+        id: collect
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          from pathlib import Path
+
+          configs = sorted(Path("config").glob("*/*.config"))
+          if not configs:
+              raise SystemExit("No build configs found")
+
+          matrix = []
+          for config in configs:
+              platform = config.parent.name
+              target = config.stem
+              matrix.append({
+                  "config": config.as_posix(),
+                  "platform": platform,
+                  "target": target,
+                  "name": f"{platform}_{target}",
+              })
+
+          print(f"configs={json.dumps(matrix, separators=(',', ':'))}")
+          PY
+
   build_frontend:
     name: Build frontend
     runs-on: ubuntu-latest
@@ -40,16 +74,13 @@ jobs:
           if-no-files-found: error
 
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.name }}
     runs-on: ubuntu-latest
-    needs: build_frontend
+    needs: [prepare, build_frontend]
     strategy:
+      fail-fast: false
       matrix:
-        include:
-          - config: config/entware/mipsel-3.4_kn.config
-            target: mipsel-3.4_kn
-          - config: config/entware/aarch64-3.10_kn.config
-            target: aarch64-3.10_kn
+        include: ${{ fromJson(needs.prepare.outputs.configs) }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
@@ -92,13 +123,13 @@ jobs:
         if: ${{ github.event_name != 'release' }}
         run: |
           mkdir -p ./artifact
-          cp ./.build/*_${{ matrix.target }}.ipk ./artifact/
+          cp ./.build/*.ipk ./artifact/
 
       - name: Upload package
         if: ${{ github.event_name != 'release' }}
         uses: actions/upload-artifact@v5
         with:
-          name: magitrickle_${{ matrix.target }}
+          name: magitrickle_${{ matrix.name }}
           path: ./artifact/
           if-no-files-found: error
           compression-level: 0

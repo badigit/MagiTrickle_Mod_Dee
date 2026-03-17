@@ -18,6 +18,7 @@
     isValidSubnet6,
     isValidWildcard,
     VALIDATOP_MAP,
+    extractDomainFromUrl,
   } from "../../../utils/rule-validators";
 
   let { open = $bindable(false), group_index = null } = $props();
@@ -161,18 +162,21 @@
         return { text: line, type: null, isValid: false };
       }
 
+      // Извлекаем домен из URL (https://www.example.com/path → example.com)
+      const cleaned = extractDomainFromUrl(trimmed);
+
       let type: string | null = null;
       if (ruleType === "auto") {
-        type = detectRuleType(trimmed);
+        type = detectRuleType(cleaned);
       } else {
         const validator = VALIDATOP_MAP[ruleType];
-        if (validator && validator(trimmed)) {
+        if (validator && validator(cleaned)) {
           type = ruleType;
         }
       }
 
       return {
-        text: line,
+        text: cleaned,
         type: type || "INVALID",
         isValid: !!type,
       };

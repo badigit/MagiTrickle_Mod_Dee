@@ -54,6 +54,25 @@ export function isValidRegex(pattern: string): boolean {
   }
 }
 
+/**
+ * Извлекает hostname из строки, если она похожа на URL (содержит :// или начинается с http/https).
+ * Убирает протокол, путь, query, фрагмент, порт и www-префикс.
+ */
+export function extractDomainFromUrl(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return trimmed;
+  try {
+    // Пробуем парсить как URL только если есть признаки URL
+    if (/^https?:\/\//i.test(trimmed) || /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+      const url = new URL(trimmed);
+      return url.hostname.replace(/^www\./i, "");
+    }
+  } catch {
+    // не URL — возвращаем как есть
+  }
+  return trimmed;
+}
+
 export const VALIDATOP_MAP: Record<string, (pattern: string) => boolean> = {
   regex: isValidRegex,
   wildcard: isValidWildcard,

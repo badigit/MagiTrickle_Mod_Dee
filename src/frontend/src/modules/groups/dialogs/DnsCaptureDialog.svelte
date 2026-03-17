@@ -203,6 +203,20 @@
 
   function handleOpenChange(v: boolean) {
     if (!v) {
+      if (active) {
+        const shouldStop = window.confirm(t("DNS capture is still running. Stop capture and close?"));
+        if (!shouldStop) {
+          open = true;
+          return;
+        }
+
+        void stopCapture().finally(() => {
+          stopPolling();
+          onclose();
+        });
+        return;
+      }
+
       stopPolling();
       onclose();
     }
@@ -248,6 +262,12 @@
           </Dialog.Close>
 
           <div class="capture-body">
+            {#if active}
+              <div class="capture-warning" role="status" aria-live="polite">
+                {t("Capture is active. Closing this dialog will stop it.")}
+              </div>
+            {/if}
+
             <div class="capture-controls">
               {#if !active}
                 <Button class="accent" onclick={startCapture}>
@@ -313,6 +333,17 @@
 <style>
   .capture-body {
     margin-top: 1rem;
+  }
+
+  .capture-warning {
+    margin-bottom: 0.75rem;
+    padding: 0.7rem 0.85rem;
+    border-radius: 0.7rem;
+    border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
+    background: color-mix(in oklab, var(--accent) 10%, var(--bg-light));
+    color: var(--text);
+    font-size: 0.95rem;
+    line-height: 1.35;
   }
 
   .capture-controls {

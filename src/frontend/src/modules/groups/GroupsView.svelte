@@ -14,7 +14,19 @@
   import ImportConfigDialog from "./dialogs/ImportConfigDialog.svelte";
   import ImportRulesDialog from "./dialogs/ImportRulesDialog.svelte";
 
-  import { Add, Check, Clear, Export, Import, Radio, Save, Sigma, ToggleRight } from "../../components/ui/icons";
+  import {
+    Add,
+    Check,
+    Clear,
+    Export,
+    Gauge,
+    Import,
+    Radio,
+    Refresh,
+    Save,
+    Sigma,
+    ToggleRight,
+  } from "../../components/ui/icons";
   import { droppable } from "../../lib/dnd";
   import { toast } from "../../utils/events";
   import { parseConfig, type Group, type Rule } from "../../types";
@@ -182,6 +194,10 @@
     store.applyInterfaceToSelected(bulkInterface);
   }
 
+  function loadIPCounts() {
+    void store.fetchIPCounts();
+  }
+
   $effect(() => {
     const options = bulkInterfaceOptions;
     if (!options.length) {
@@ -220,7 +236,7 @@
 
   onMount(() => {
     void aliases.load();
-    void store.mount().then(() => store.startIPCountPolling());
+    void store.mount();
   });
 
   onDestroy(() => {
@@ -247,6 +263,27 @@
       <Tooltip value={t("DNS Capture")}>
         <Button onclick={() => (dnsCaptureOpen = true)}>
           <Radio size={22} />
+        </Button>
+      </Tooltip>
+      <Tooltip
+        value={t(
+          store.ipCountsVisible ? "Refresh cached IP counts" : "Show warmed IP counts",
+        )}
+      >
+        <Button
+          onclick={loadIPCounts}
+          inactive={store.groupsCount === 0 || store.ipCountsLoading}
+          aria-label={t(
+            store.ipCountsVisible ? "Refresh cached IP counts" : "Show warmed IP counts",
+          )}
+        >
+          {#if store.ipCountsLoading}
+            <Refresh size={22} class="spin" />
+          {:else if store.ipCountsVisible}
+            <Refresh size={22} />
+          {:else}
+            <Gauge size={22} />
+          {/if}
         </Button>
       </Tooltip>
       <Tooltip value={t("Import Config")}>
@@ -402,6 +439,10 @@
     opacity: 0;
   }
 
+  .spin {
+    animation: spin 1s linear infinite;
+  }
+
   .group-list.visible {
     opacity: 1;
   }
@@ -418,6 +459,12 @@
   .group-wrapper-inner {
     min-height: 0;
     overflow: hidden;
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .group-wrapper.is-hidden {

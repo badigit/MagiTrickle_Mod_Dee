@@ -163,10 +163,6 @@
     background: var(--bg-light-extra);
   }
 
-  .conflict-rule.clickable:hover .rule-label {
-    color: var(--accent);
-  }
-
   .conflict-rule.readonly {
     padding: 0.5rem 0.6rem;
     background: var(--bg-light);

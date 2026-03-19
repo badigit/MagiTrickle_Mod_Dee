@@ -11,6 +11,7 @@
   import Button from "../../components/ui/Button.svelte";
   import Tooltip from "../../components/ui/Tooltip.svelte";
   import { Save, Import, Export, Globe, Gauge } from "../../components/ui/icons";
+  import SpeedtestModal from "../diagnostics/SpeedtestModal.svelte";
 
   let { visible = false }: { visible?: boolean } = $props();
 
@@ -21,6 +22,7 @@
   let externalIPs = $state<Record<string, string | "loading" | "error">>({});
   let globalLoading = $state(false);
   let hasInitialCheck = $state(false);
+  let showSpeedtest = $state<string | null>(null);
 
   // Группы загружаются отдельно для статистики (InterfacesView — изолированный модуль)
   let groups = $state<Group[]>([]);
@@ -329,10 +331,15 @@
           </div>
         </div>
 
-        <!-- speedtest button hidden until feature is implemented -->
-        <div class="interface-actions-row" style="display: none">
+        <div class="interface-actions-row">
           <Tooltip value={t("Speed Test")}>
-            <Button small variant="ghost" disabled title={t("Speed Test")}>
+            <Button
+              small
+              variant="ghost"
+              disabled={item.id === "TPROXY" || item.id === "blackhole"}
+              title={t("Speed Test")}
+              onclick={() => (showSpeedtest = item.id)}
+            >
               <Gauge size={18} />
             </Button>
           </Tooltip>
@@ -364,6 +371,18 @@
     {/each}
   </div>
 </div>
+
+{#if showSpeedtest}
+  {@const item = interfaceList.find((i) => i.id === showSpeedtest)}
+  {#if item}
+    <SpeedtestModal
+      interfaceId={item.id}
+      interfaceName={item.alias || item.id}
+      interfaceIP={item.ip}
+      onClose={() => (showSpeedtest = null)}
+    />
+  {/if}
+{/if}
 
 <style>
   .interfaces-view {

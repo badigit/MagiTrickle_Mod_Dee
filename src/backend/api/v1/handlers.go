@@ -13,6 +13,7 @@ import (
 	"magitrickle/api/utils"
 	"magitrickle/api/v1/types"
 	"magitrickle/app"
+	"magitrickle/diagnostics"
 	"magitrickle/models"
 	"magitrickle/utils/intID"
 
@@ -708,6 +709,38 @@ func (h *Handler) GetTProxyStatus(w http.ResponseWriter, r *http.Request) {
 				Enable:  m.Enable,
 				IPCount: ipCount,
 			})
+		}
+	}
+	utils.WriteJson(w, http.StatusOK, res)
+}
+
+// RunSpeedtest запускает тест скорости и стримит результаты через SSE.
+func (h *Handler) RunSpeedtest(w http.ResponseWriter, r *http.Request) {
+	ifaceName := r.URL.Query().Get("interface")
+	serverID, _ := strconv.Atoi(r.URL.Query().Get("server_id"))
+	parallelLoss := r.URL.Query().Get("parallel_loss") == "true"
+	diagnostics.RunSpeedtestStream(w, ifaceName, serverID, parallelLoss)
+}
+
+// GetSpeedtestServers возвращает список доступных серверов Speedtest.
+func (h *Handler) GetSpeedtestServers(w http.ResponseWriter, r *http.Request) {
+	ifaceName := r.URL.Query().Get("interface")
+	search := r.URL.Query().Get("search")
+	servers, err := diagnostics.GetServers(ifaceName, search)
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to get servers: %v", err))
+		return
+	}
+
+	res := make([]map[string]interface{}, len(servers))
+	for i, s := range servers {
+		res[i] = map[string]interface{}{
+			"id":       s.ID,
+			"name":     s.Name,
+			"country":  s.Country,
+			"sponsor":  s.Sponsor,
+			"distance": s.Distance,
+			"latency":  s.Latency.Milliseconds(),
 		}
 	}
 	utils.WriteJson(w, http.StatusOK, res)

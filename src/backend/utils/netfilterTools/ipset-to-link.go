@@ -16,7 +16,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const Blackhole = "blackhole"
+const (
+	Blackhole = "blackhole"
+	Direct    = "direct"
+)
 
 type IPSetToLink struct {
 	enabled atomic.Bool
@@ -45,6 +48,33 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		ipsetName += "_4"
 	} else {
 		ipsetName += "_6"
+	}
+
+	/*
+		Direct mode: only mangle RETURN to bypass all MagiTrickle routing.
+		No filter, no NAT, no ip rule/route needed.
+	*/
+	if r.ifaceName == Direct {
+		err := ipt.RegisterChainOverride("mangle", r.chainName)
+		if err != nil {
+			return fmt.Errorf("failed to create chain: %w", err)
+		}
+
+		err = ipt.Append("mangle", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "RETURN")
+		if err != nil {
+			return fmt.Errorf("failed to append RETURN rule: %w", err)
+		}
+
+		err = ipt.Append("mangle", "PREROUTING", "-j", r.chainName)
+		if err != nil {
+			return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
+		}
+
+		err = ipt.Commit()
+		if err != nil {
+			return fmt.Errorf("failed to commit iptables rules: %w", err)
+		}
+		return nil
 	}
 
 	/*
@@ -123,6 +153,25 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 		return nil
 	}
 	var errs []error
+
+	// Direct mode: only mangle chain exists.
+	if r.ifaceName == Direct {
+		err := ipt.RegisterChainDelete("mangle", r.chainName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to delete chain: %w", err))
+		}
+
+		err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
+		}
+
+		err = ipt.Commit()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to commit iptables rules: %w", err))
+		}
+		return errors.Join(errs...)
+	}
 
 	/*
 		Filter Forward
@@ -379,6 +428,19 @@ func (r *IPSetToLink) getUnusedMarkAndTable() (idx uint32, err error) {
 
 func (r *IPSetToLink) enable() error {
 	if !r.enabled.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	// Direct mode needs only iptables RETURN rules — no mark, table, ip rule, or route.
+	if r.ifaceName == Direct {
+		err := r.insertIPTablesRules(r.nh.IPTables4)
+		if err != nil {
+			return err
+		}
+		err = r.insertIPTablesRules(r.nh.IPTables6)
+		if err != nil {
+			return err
+		}
 		return nil
 	}
 

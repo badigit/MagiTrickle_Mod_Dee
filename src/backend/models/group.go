@@ -10,6 +10,10 @@ const (
 
 	// InterfaceTProxy is the magic Interface value that selects TPROXY mode.
 	InterfaceTProxy = "TPROXY"
+
+	// InterfaceDirect is the magic Interface value that bypasses all routing
+	// (traffic goes through the default route, overriding other groups).
+	InterfaceDirect = "direct"
 )
 
 type Group struct {

@@ -74,7 +74,8 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get interfaces: %w", err).Error())
 		return
 	}
-	res := make([]types.InterfaceRes, 0, len(interfaces)+2)
+	res := make([]types.InterfaceRes, 0, len(interfaces)+3)
+	res = append(res, types.InterfaceRes{ID: models.InterfaceDirect, Active: true})
 	res = append(res, types.InterfaceRes{ID: "blackhole", Active: true})
 	for _, iface := range interfaces {
 		active := iface.Flags&net.FlagUp != 0
@@ -120,6 +121,9 @@ func (h *Handler) GetExternalIP(w http.ResponseWriter, r *http.Request) {
 		return
 	case ifaceID == "blackhole":
 		utils.WriteJson(w, http.StatusOK, map[string]string{"ip": "0.0.0.0"})
+		return
+	case ifaceID == models.InterfaceDirect:
+		utils.WriteJson(w, http.StatusOK, map[string]string{"ip": ""})
 		return
 	default:
 		// Bind to the specific network interface

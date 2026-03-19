@@ -122,6 +122,7 @@
   let manualIP = $state<string | null>(null);
   let isTestDone = false;
   let isPaused = false;
+  let isMounted = true;
 
   let displayIP = $derived(clientInfo?.ip || manualIP || currentInterfaceIP || "...");
   let innerWidth = $state(typeof window !== "undefined" ? window.innerWidth : 1000);
@@ -232,6 +233,7 @@
       document.body.style.overflow = "hidden";
     }
     return () => {
+      isMounted = false;
       closeEventSource();
       // Unlock body scroll
       if (typeof document !== "undefined") {
@@ -247,8 +249,8 @@
         `/system/interfaces/${currentInterfaceId}/external-ip`,
       );
       if (res.ip) manualIP = res.ip;
-    } catch (e) {
-      console.error(e);
+    } catch {
+      // ignore — interface may not have IPv4
     }
   }
 
@@ -289,9 +291,10 @@
     }
 
     closeEventSource();
+    if (!isMounted) return;
     toast.error(t("Speedtest failed, retrying..."));
     setTimeout(() => {
-      if (onClose) startTest();
+      if (isMounted) startTest();
     }, 1500);
   }
 

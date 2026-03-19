@@ -331,19 +331,20 @@
           </div>
         </div>
 
-        <div class="interface-actions-row">
-          <Tooltip value={t("Speed Test")}>
-            <Button
-              small
-              variant="ghost"
-              disabled={item.id === "TPROXY" || item.id === "blackhole"}
-              title={t("Speed Test")}
-              onclick={() => (showSpeedtest = item.id)}
-            >
-              <Gauge size={18} />
-            </Button>
-          </Tooltip>
-        </div>
+        {#if item.id !== "TPROXY" && item.id !== "blackhole" && item.id !== "direct"}
+          <div class="interface-actions-row">
+            <Tooltip value={t("Speed Test")}>
+              <Button
+                small
+                variant="ghost"
+                title={t("Speed Test")}
+                onclick={() => (showSpeedtest = item.id)}
+              >
+                <Gauge size={18} />
+              </Button>
+            </Tooltip>
+          </div>
+        {/if}
 
         <div class="interface-stats">
           {#if stats.perInterface[item.id]}

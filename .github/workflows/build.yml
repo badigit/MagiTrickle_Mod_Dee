@@ -63,7 +63,7 @@ jobs:
 
       - name: Build frontend
         run: |
-          make clear
+          make download_frontend
           make build_frontend
 
       - name: Upload frontend artifacts
@@ -98,6 +98,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y fakeroot upx
 
+      - name: Install apk-tools
+        if: ${{ matrix.platform == 'openwrt' }}
+        run: |
+          docker run --rm -v /usr/local/bin:/mnt alpine:edge sh -c "apk add --no-cache apk-tools-static && cp /sbin/apk.static /mnt/apk && chmod +x /mnt/apk"
+
       - name: Download frontend artifacts
         uses: actions/download-artifact@v5
         with:
@@ -106,37 +111,61 @@ jobs:
 
       - name: Build and Package
         run: |
-          printf '%s\n' \
-            'build_frontend:' \
-            $'\tmkdir -p "$(USRSHARE_DIR)/magitrickle/skins/default"' \
-            $'\tcp -r ./src/frontend/dist/* "$(USRSHARE_DIR)/magitrickle/skins/default"' \
-            > .ci-frontend.mk
-          . "${{ matrix.config }}"
           cp "${{ matrix.config }}" .config
-          make -f Makefile -f .ci-frontend.mk build package
+          make download_backend build_backend
+          # prepare_files depends on build (backend+frontend), but frontend
+          # is already pre-built as a separate job artifact in ./src/frontend/dist.
+          # Call prepare_files without its build dependency.
+          make -o build prepare_files
+          make -o build -o prepare_files package
 
-      - name: List built packages
-        if: always()
-        run: find ./.build -name "*.ipk" -ls 2>/dev/null || echo "No .ipk files found"
-
-      - name: Prepare artifact
-        if: ${{ github.event_name != 'release' }}
+      - name: Collect package files
+        id: package_outputs
         run: |
-          mkdir -p ./artifact
-          cp ./.build/*.ipk ./artifact/
+          mapfile -t packages < <(
+            find .build -maxdepth 1 -type f \( -name "magitrickle_*.ipk" -o -name "magitrickle_*.apk" \) | sort
+          )
 
-      - name: Upload package
-        if: ${{ github.event_name != 'release' }}
+          if [ "${#packages[@]}" -eq 0 ]; then
+            echo "No package files found" >&2
+            exit 1
+          fi
+
+          for i in "${!packages[@]}"; do
+            index=$((i + 1))
+            file="${packages[$i]}"
+            echo "package_${index}_path=${file}" >> "$GITHUB_OUTPUT"
+            echo "package_${index}_name=$(basename "${file}")" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Upload package artifact 1
+        if: ${{ github.event_name != 'release' && steps.package_outputs.outputs.package_1_path != '' }}
         uses: actions/upload-artifact@v5
         with:
-          name: magitrickle_${{ matrix.name }}
-          path: ./artifact/
+          name: ${{ steps.package_outputs.outputs.package_1_name }}
+          path: ${{ steps.package_outputs.outputs.package_1_path }}
           if-no-files-found: error
           compression-level: 0
 
-      - name: Upload asset to release
-        if: ${{ github.event_name == 'release' }}
+      - name: Upload package artifact 2
+        if: ${{ github.event_name != 'release' && steps.package_outputs.outputs.package_2_path != '' }}
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.package_outputs.outputs.package_2_name }}
+          path: ${{ steps.package_outputs.outputs.package_2_path }}
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload asset to release 1
+        if: ${{ github.event_name == 'release' && steps.package_outputs.outputs.package_1_path != '' }}
         uses: softprops/action-gh-release@v2
         with:
-          files: ./.build/magitrickle_*.ipk
+          files: ${{ steps.package_outputs.outputs.package_1_path }}
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Upload asset to release 2
+        if: ${{ github.event_name == 'release' && steps.package_outputs.outputs.package_2_path != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.package_outputs.outputs.package_2_path }}
           token: ${{ secrets.RELEASE_TOKEN }}

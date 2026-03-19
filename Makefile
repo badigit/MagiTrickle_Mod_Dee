@@ -29,7 +29,10 @@ ifeq ($(strip $(PKG_VERSION)),)
 		PKG_VERSION := $(PKG_VERSION_PRERELEASE)~git$(PRERELEASE_DATE).$(COMMIT)
 	endif
 endif
-PKG_VERSION_APK := $(shell echo "$(PKG_VERSION)" | sed -E 's/~git([0-9]+)\.[^.]+$$/_pre\1/')
+# APK version: only digits, dots, and _pre/_alpha/_beta/_rc suffixes allowed.
+# 0.5.2-badigit.6 → 0.5.2.6
+# 0.5.2-badigit.5~git20260319.abc123 → 0.5.2.5_pre20260319
+PKG_VERSION_APK := $(shell echo "$(PKG_VERSION)" | sed -E 's/~git([0-9]+)\.[^.]+$$/_pre\1/' | sed -E 's/-[a-zA-Z]+\./\./')
 PKG_REVISION ?= 1
 
 # Directories

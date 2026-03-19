@@ -306,7 +306,7 @@
                 <div class="tproxy-status" class:listening={tproxyStatus.listening} class:not-listening={!tproxyStatus.listening}>
                   <span class="tproxy-dot"></span>
                   {tproxyStatus.listening ? t("Listening") : t("Not listening")}
-                  {#if tproxyStatus.groups.length > 0}
+                  {#if tproxyStatus.groups?.length > 0}
                     <span class="tproxy-ips">
                       — {tproxyStatus.groups.reduce((s, g) => s + g.ip_count, 0)} IP
                     </span>

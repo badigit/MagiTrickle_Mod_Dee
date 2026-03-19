@@ -22,6 +22,7 @@
   let externalIPs = $state<Record<string, string | "loading" | "error">>({});
   let globalLoading = $state(false);
   let hasInitialCheck = $state(false);
+  let isReady = $state(false);
   let showSpeedtest = $state<string | null>(null);
 
   // Группы загружаются отдельно для статистики (InterfacesView — изолированный модуль)
@@ -81,10 +82,11 @@
     }
     refreshList();
     fetchTProxyStatus();
+    isReady = true;
   });
 
   $effect(() => {
-    if (visible && !hasInitialCheck) {
+    if (visible && isReady && !hasInitialCheck) {
       hasInitialCheck = true;
       checkExternalIPs();
     }
@@ -93,8 +95,9 @@
   async function checkExternalIPs() {
     globalLoading = true;
 
+    const virtualIds = new Set(["TPROXY", "blackhole", "direct"]);
     const activeInterfaces = interfaceList.filter(
-      (i) => ((i.active && i.ip) || (i.active && i.id === "blackhole")) && i.id !== "TPROXY",
+      (i) => i.active && i.ip && !virtualIds.has(i.id),
     );
     for (const i of activeInterfaces) {
       externalIPs[i.id] = "loading";
@@ -331,7 +334,7 @@
           </div>
         </div>
 
-        {#if item.id !== "TPROXY" && item.id !== "blackhole" && item.id !== "direct"}
+        {#if item.id !== "TPROXY" && item.id !== "blackhole"}
           <div class="interface-actions-row">
             <Tooltip value={t("Speed Test")}>
               <Button

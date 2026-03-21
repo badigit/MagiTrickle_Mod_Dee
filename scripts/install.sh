@@ -31,14 +31,18 @@ for a in $(/opt/bin/opkg print-architecture | awk '{print $2}'); do
   case "$a" in
     aarch64-3.10_kn) ARCH="aarch64-3.10_kn"; break ;;
     mipsel-3.4_kn)   ARCH="mipsel-3.4_kn";   break ;;
+    mips-3.4_kn)     ARCH="mips-3.4_kn";     break ;;
     aarch64-3.10)     ARCH="aarch64-3.10_kn"  ;;
     mipsel-3.4)       ARCH="mipsel-3.4_kn"    ;;
+    mips-3.4)         ARCH="mips-3.4_kn"      ;;
   esac
 done
 
 if [ -z "$ARCH" ]; then
   echo "Error: unsupported architecture" >&2
+  echo "Detected architectures:" >&2
   /opt/bin/opkg print-architecture >&2
+  echo "Supported: aarch64-3.10(_kn), mipsel-3.4(_kn), mips-3.4(_kn), armv7-3.2(_kn)" >&2
   exit 1
 fi
 

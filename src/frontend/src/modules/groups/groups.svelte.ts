@@ -552,10 +552,14 @@ export class GroupsStore {
 
     fetcher
       .put("/groups?save=true", { groups: rawData })
-      .then(() => {
+      .then((res: any) => {
         this.tracker.reset(rawData);
         overlay.hide();
-        toast.success(t("Saved"));
+        if (res?.errors?.length) {
+          toast.error(res.errors.join("\n"));
+        } else {
+          toast.success(t("Saved"));
+        }
       })
       .catch(() => {
         overlay.hide();

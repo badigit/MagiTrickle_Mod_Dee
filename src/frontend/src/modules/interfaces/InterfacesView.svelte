@@ -129,22 +129,12 @@
   }
 
   function refreshList() {
-    const systemIds = new Set(interfaces.full.map((i) => i.id));
-    const aliasIds = Object.keys(aliases.all);
-
-    const known = interfaces.full.map((item) => ({
+    interfaceList = interfaces.full.map((item) => ({
       id: item.id,
       alias: aliases.all[item.id] ?? "",
       active: item.active,
       ip: item.ip,
     }));
-
-    const extra = aliasIds
-      .filter((id) => !systemIds.has(id))
-      .sort()
-      .map((id) => ({ id, alias: aliases.all[id] }));
-
-    interfaceList = [...known, ...extra];
   }
 
   async function save() {
@@ -183,19 +173,12 @@
     if (!file) return;
     try {
       const parsed = JSON.parse(await file.text());
-      const systemIds = new Set(interfaces.full.map((i) => i.id));
-      const aliasIds = Object.keys(parsed);
-      const known = interfaces.full.map((item) => ({
+      interfaceList = interfaces.full.map((item) => ({
         id: item.id,
         alias: parsed[item.id] ?? "",
         active: item.active,
         ip: item.ip,
       }));
-      const extra = aliasIds
-        .filter((id) => !systemIds.has(id))
-        .sort()
-        .map((id) => ({ id, alias: parsed[id] }));
-      interfaceList = [...known, ...extra];
       hasChanges = true;
       toast.success(t("Config imported"));
     } catch {

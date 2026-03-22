@@ -22,11 +22,17 @@ MagiTrickle (произносится как *Мэджитрикл*) – ути�
 
 > Это форк [MagiTrickle](https://gitlab.com/magitrickle/magitrickle) с дополнительными возможностями: redir-tproxy, подписки на правила, захват DNS-запросов и др.
 
+**Entware (Keenetic):**
 ```shell
 opkg update && opkg install wget-ssl ca-certificates && wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle_mod_badigit/mod_badigit/scripts/install.sh | sh
 ```
 
-Скрипт автоматически определяет архитектуру, скачивает последнюю версию с GitHub и устанавливает. Для повторного обновления — та же команда.
+**OpenWrt:**
+```shell
+wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle_mod_badigit/mod_badigit/scripts/install.sh | sh
+```
+
+Скрипт автоматически определяет платформу (Entware / OpenWrt opkg / OpenWrt apk), архитектуру, скачивает последнюю версию с GitHub и устанавливает. Для обновления — та же команда.
 
 <details>
 <summary><b>Описание типов правил</b></summary>

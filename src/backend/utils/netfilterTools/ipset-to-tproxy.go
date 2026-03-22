@@ -339,6 +339,8 @@ func (r *IPSetToTProxy) enable() error {
 
 	ensureKernelModule("xt_TPROXY")
 	ensureKernelModule("xt_socket")
+	ensureKernelModule("nft_tproxy")
+	ensureKernelModule("nft_socket")
 
 	idx, err := r.getUnusedMarkAndTable()
 	if err != nil {

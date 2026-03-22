@@ -6,3 +6,10 @@ export root="${IPKG_INSTROOT}"
 export pkgname="magitrickle"
 add_group_and_user
 default_postinst
+
+# Optional: install TPROXY dependencies (best-effort)
+if command -v apk >/dev/null 2>&1; then
+  apk add kmod-nft-tproxy kmod-nft-socket iptables-mod-tproxy iptables-mod-socket 2>/dev/null || true
+elif command -v opkg >/dev/null 2>&1; then
+  opkg install kmod-nft-tproxy kmod-nft-socket iptables-mod-tproxy iptables-mod-socket 2>/dev/null || true
+fi

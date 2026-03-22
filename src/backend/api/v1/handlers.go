@@ -313,13 +313,21 @@ func (h *Handler) PutGroups(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.app.ClearGroups()
+	var addErrors []string
 	for _, grp := range newGroups {
 		if err := h.app.AddGroup(grp); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, err.Error())
-			return
+			log.Error().Err(err).Str("group", grp.Name).Msg("failed to add group")
+			addErrors = append(addErrors, fmt.Sprintf("%s: %v", grp.Name, err))
 		}
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromGroups(newGroups, true))
+	if len(addErrors) > 0 {
+		utils.WriteJson(w, http.StatusOK, map[string]any{
+			"groups": RespFromGroups(newGroups, true).Groups,
+			"errors": addErrors,
+		})
+	} else {
+		utils.WriteJson(w, http.StatusOK, RespFromGroups(newGroups, true))
+	}
 	if r.URL.Query().Get("save") == "true" {
 		if err := h.app.SaveConfig(); err != nil {
 			log.Error().Err(err).Msg("failed to save config file")

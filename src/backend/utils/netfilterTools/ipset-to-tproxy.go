@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -315,6 +316,31 @@ func (r *IPSetToTProxy) getUnusedMarkAndTable() (idx uint32, err error) {
 	return idx, nil
 }
 
+// checkTProxyAvailable verifies that required kernel modules are loaded.
+func checkTProxyAvailable() error {
+	data, err := os.ReadFile("/proc/modules")
+	if err != nil {
+		return nil // can't check, proceed optimistically
+	}
+	modules := string(data)
+	hasTProxy := strings.Contains(modules, "xt_TPROXY") || strings.Contains(modules, "nft_tproxy")
+	hasSocket := strings.Contains(modules, "xt_socket") || strings.Contains(modules, "nft_socket")
+	if hasTProxy && hasSocket {
+		return nil
+	}
+	var missing []string
+	if !hasTProxy {
+		missing = append(missing, "tproxy")
+	}
+	if !hasSocket {
+		missing = append(missing, "socket")
+	}
+	return fmt.Errorf("TPROXY requires kernel modules %v not found; "+
+		"install: opkg install kmod-ipt-tproxy kmod-ipt-socket "+
+		"or: apk add kmod-nft-tproxy kmod-nft-socket iptables-mod-tproxy iptables-mod-socket",
+		missing)
+}
+
 // ensureKernelModule tries to load a kernel module by name (best-effort).
 func ensureKernelModule(name string) {
 	matches, _ := filepath.Glob("/lib/modules/*/" + name + ".ko")
@@ -341,6 +367,10 @@ func (r *IPSetToTProxy) enable() error {
 	ensureKernelModule("xt_socket")
 	ensureKernelModule("nft_tproxy")
 	ensureKernelModule("nft_socket")
+
+	if err := checkTProxyAvailable(); err != nil {
+		return err
+	}
 
 	idx, err := r.getUnusedMarkAndTable()
 	if err != nil {

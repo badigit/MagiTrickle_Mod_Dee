@@ -37,6 +37,7 @@
   import SubscriptionRuleRow from "./SubscriptionRuleRow.svelte";
 
   import {
+    ClipboardCopy,
     Delete,
     Dots,
     Grip,
@@ -47,6 +48,7 @@
     Refresh,
   } from "../../../components/ui/icons";
   import { draggable } from "../../../lib/dnd";
+  import { toast } from "../../../utils/events";
   import { type SubscriptionRule } from "../../../types";
 
   type Props = {
@@ -135,6 +137,45 @@
       store.handleSubscriptionFinished();
     }
   });
+
+  async function copySubscriptionRules() {
+    if (!subscription) return;
+
+    const text = subscription.rules
+      .map((rule) => rule.rule.trim())
+      .filter(Boolean)
+      .join("\n");
+
+    if (!text) {
+      toast.warning(t("No entries to copy"));
+      return;
+    }
+
+    try {
+      if (globalThis.navigator?.clipboard?.writeText) {
+        await globalThis.navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-9999px";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(textarea);
+        if (!copied) {
+          throw new Error("execCommand(copy) failed");
+        }
+      }
+      toast.success(t("Entries copied"));
+    } catch (error) {
+      console.error("Failed to copy subscription rules", error);
+      toast.error(t("Failed to copy entries"));
+    }
+  }
 
   function formatTime(timestamp: number | undefined | null) {
     if (!timestamp) return t("Never updated");
@@ -273,6 +314,16 @@
             </Tooltip>
           </div>
 
+          <div class="action copy">
+            {#if is_desktop}
+              <Tooltip value={t("Copy Group Entries")}>
+                <Button small onclick={copySubscriptionRules}>
+                  <ClipboardCopy size={20} />
+                </Button>
+              </Tooltip>
+            {/if}
+          </div>
+
           <div class="action sync">
             <Tooltip value={t("Sync Subscription")}>
               <Button small onclick={() => store.syncSubscription(subscription_index)}>
@@ -294,12 +345,18 @@
                   <Dots size={20} />
                 {/snippet}
                 {#snippet item1()}
+                  <Button general onclick={copySubscriptionRules}>
+                    <div class="dd-icon"><ClipboardCopy size={20} /></div>
+                    <div class="dd-label">{t("Copy Group Entries")}</div>
+                  </Button>
+                {/snippet}
+                {#snippet item2()}
                   <Button general onclick={() => store.syncSubscription(subscription_index)}>
                     <div class="dd-icon"><Refresh size={20} /></div>
                     <div class="dd-label">{t("Sync")}</div>
                   </Button>
                 {/snippet}
-                {#snippet item2()}
+                {#snippet item3()}
                   <Button general onclick={() => store.deleteSubscription(subscription_index)}>
                     <div class="dd-icon"><Delete size={20} /></div>
                     <div class="dd-label">{t("Delete Subscription")}</div>
@@ -637,6 +694,10 @@
 
     .subscription-actions .action.toggle {
       margin-left: auto;
+    }
+
+    .subscription-actions .action.copy {
+      display: none;
     }
 
     .subscription-actions .action.sync {

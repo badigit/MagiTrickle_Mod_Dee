@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"path"
 	"path/filepath"
@@ -53,6 +54,19 @@ func SetupHTTP(a app.Main, errChan chan error) (*http.Server, error) {
 			auth.Middleware(a)(next).ServeHTTP(w, r)
 		})
 	})
+	// pprof — доступен всегда, zero overhead когда не используется.
+	// Профилирование активируется только при явном HTTP-запросе.
+	r.HandleFunc("/debug/pprof/", pprof.Index)
+	r.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	r.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	r.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	r.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	r.Handle("/debug/pprof/goroutine", pprof.Handler("goroutine"))
+	r.Handle("/debug/pprof/heap", pprof.Handler("heap"))
+	r.Handle("/debug/pprof/allocs", pprof.Handler("allocs"))
+	r.Handle("/debug/pprof/block", pprof.Handler("block"))
+	r.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
+
 	r.Mount("/api/v1", v1.NewRouter(a))
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		originalFilePath := path.Clean(r.URL.Path)

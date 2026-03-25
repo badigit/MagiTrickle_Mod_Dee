@@ -1,13 +1,13 @@
 <script lang="ts">
   import { fly } from "svelte/transition";
 
+  import { viewport } from "../../data/viewport.svelte";
   import { ToTop } from "../ui/icons";
 
   let visible = $state(false);
 </script>
 
-<!-- TODO: Move "is_desktop" to const -->
-<svelte:window onscroll={() => (visible = window.pageYOffset > 0 && window.innerWidth > 668)} />
+<svelte:window onscroll={() => (visible = window.scrollY > 0 && viewport.isDesktop)} />
 
 {#if visible}
   <button transition:fly onclick={() => window.scrollTo({ top: 0, behavior: "smooth" })}>

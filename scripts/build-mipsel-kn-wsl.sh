@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONFIG_FILE="$ROOT_DIR/config/entware/aarch64-3.10_kn.config"
-BUILD_DIR="$ROOT_DIR/.build/entware_aarch64-3.10_kn"
+CONFIG_FILE="$ROOT_DIR/config/entware/mipsel-3.4_kn.config"
+BUILD_DIR="$ROOT_DIR/.build/entware_mipsel-3.4_kn"
 SKIN_DIR="$BUILD_DIR/data/opt/usr/share/magitrickle/skins/default"
 NODE24=(npx -y -p node@24.12.0 node)
 NPM_CLI="/usr/share/nodejs/npm/bin/npm-cli.js"
@@ -27,7 +27,7 @@ make build_backend \
   TARGET="${TARGET}" \
   GOOS="${GOOS}" \
   GOARCH="${GOARCH}" \
-  GOMIPS= \
+  GOMIPS="${GOMIPS}" \
   GOARM= \
   GO386=
 
@@ -43,6 +43,6 @@ make package \
   TARGET="${TARGET}" \
   GOOS="${GOOS}" \
   GOARCH="${GOARCH}" \
-  GOMIPS= \
+  GOMIPS="${GOMIPS}" \
   GOARM= \
   GO386=

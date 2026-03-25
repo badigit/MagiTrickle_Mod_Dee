@@ -371,8 +371,6 @@
     class="group-list"
     class:visible={store.isAllRendered && !isImportingConfig && !isImportingRules}
     style={store.isAllRendered && !isImportingConfig && !isImportingRules ? "" : "display: none;"}
-    oninput={store.markDataRevision}
-    onchange={store.markDataRevision}
   >
     {#each store.data.slice(0, store.renderGroupsLimit) as group, group_index (group.id)}
       {@const isVisible = !store.searchActive || store.visibilityMap.has(group_index)}

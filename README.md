@@ -117,6 +117,8 @@ redir-port: 5001
 
 > **Важно:** в mihomo используйте именно `redir-port`, а не `tproxy-port`. MagiTrickle перенаправляет TCP через nat/REDIRECT, а UDP через mangle/TPROXY — `redir-port` корректно обрабатывает оба типа трафика на одном порту. При использовании `tproxy-port` TCP-соединения будут устанавливаться, но ответы не будут доходить до клиента.
 
+> **Важно:** `allow-lan: true` обязателен. Без него mihomo слушает только на `127.0.0.1`, и перенаправленный iptables трафик от устройств в сети не будет принят.
+
 Полный минимальный пример конфига mihomo: [`examples/mihomo-global.yaml`](examples/mihomo-global.yaml)
 
 ### 2. Настройка DNS (три варианта)

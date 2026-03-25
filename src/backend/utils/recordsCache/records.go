@@ -58,8 +58,10 @@ func (r *Records) removeReverseAlias(alias, domainName string) {
 	for i, d := range domains {
 		if d == domainName {
 			// Удаляем элемент без сохранения порядка
-			domains[i] = domains[len(domains)-1]
-			r.reverseAliases[alias] = domains[:len(domains)-1]
+			last := len(domains) - 1
+			domains[i] = domains[last]
+			domains[last] = "" // обнуляем хвост, чтобы GC мог собрать строку
+			r.reverseAliases[alias] = domains[:last]
 			break
 		}
 	}
@@ -192,6 +194,10 @@ func (r *Records) cleanupRecords() {
 		if idx == 0 {
 			delete(r.addresses, name)
 		} else {
+			// Обнуляем хвост, чтобы GC мог собрать просроченные *Address
+			for i := idx; i < len(addresses); i++ {
+				addresses[i] = nil
+			}
 			r.addresses[name] = addresses[:idx]
 		}
 	}

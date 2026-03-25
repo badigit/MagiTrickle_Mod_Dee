@@ -122,12 +122,6 @@ export class SubscriptionsStore {
       });
 
       $effect(() => {
-        this.dataRevision;
-        if (typeof window === "undefined") return;
-        setTimeout(() => this.checkRulesValidityState(), 10);
-      });
-
-      $effect(() => {
         const query = this.normalizedSearch;
         this.dataRevision;
         this.data.length;
@@ -364,6 +358,9 @@ export class SubscriptionsStore {
 
   markDataRevision = () => {
     this.dataRevision += 1;
+    if (typeof window !== "undefined") {
+      setTimeout(() => this.checkRulesValidityState(), 10);
+    }
   };
 
   async syncSubscription(index: number) {

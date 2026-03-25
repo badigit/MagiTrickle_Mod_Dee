@@ -56,6 +56,7 @@ type Main interface {
 	RemoveSubscriptionByIndex(idx int)
 	RebuildSubscriptionGroups() error
 	ForceCommitIPTables() error
+	SyncAllGroups()
 	DNSCapture() DNSCapturer
 	Start(ctx context.Context) (err error)
 }

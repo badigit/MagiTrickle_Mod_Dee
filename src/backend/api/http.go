@@ -43,7 +43,8 @@ func SetupHTTP(a app.Main, errChan chan error) (*http.Server, error) {
 	r.Use(middleware.Recoverer)
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !strings.HasPrefix(r.URL.Path, "/api/") {
+			needsAuth := strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/debug/")
+			if !needsAuth {
 				next.ServeHTTP(w, r)
 				return
 			}

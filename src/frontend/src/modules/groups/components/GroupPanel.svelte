@@ -32,6 +32,7 @@
   import { type Rule } from "../../../types";
   import { defaultRule } from "../../../utils/defaults";
   import { type SortDirection, type SortField } from "../../../utils/rule-sorter";
+  import { viewport } from "../../../data/viewport.svelte";
   import { GROUPS_STORE_CONTEXT, type GroupsStore } from "../groups.svelte";
   import { ConflictBadge } from "../../conflicts/index";
 
@@ -50,8 +51,6 @@
   const PAGE_SIZE = 50;
   let currentPage = $state(1);
 
-  let client_width = $state<number>(Infinity);
-  let is_desktop = $derived(client_width > 668);
 
   let group = $derived(store.data[group_index]);
   let searchActive = $derived(store.searchActive);
@@ -255,8 +254,6 @@
   }
 </script>
 
-<svelte:window bind:innerWidth={client_width} />
-
 {#if group}
   <div
     class="group"
@@ -320,7 +317,6 @@
               <span class="ip-count-badge">{store.ipCounts[group.id]}</span>
             </Tooltip>
           {/if}
-          <ConflictBadge {group_index} />
         </div>
 
         <div class="group-actions">
@@ -338,7 +334,7 @@
 
           <ConflictBadge groupIndex={group_index} />
 
-          {#if is_desktop}
+          {#if viewport.isDesktop}
             <Tooltip value={t("Copy Group Entries")}>
               <Button small onclick={copyGroupRules}>
                 <ClipboardCopy size={20} />

@@ -98,8 +98,6 @@
     class="subscription-list"
     class:visible={store.isAllRendered}
     style={store.isAllRendered ? "" : "display: none;"}
-    oninput={store.markDataRevision}
-    onchange={store.markDataRevision}
   >
     {#each store.data.slice(0, store.renderSubscriptionsLimit) as sub, sub_index (sub.id)}
       {@const isVisible = !store.searchActive || store.visibilityMap.has(sub_index)}

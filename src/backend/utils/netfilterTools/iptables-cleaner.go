@@ -6,6 +6,10 @@ import (
 	"strings"
 
 	"magitrickle/utils/iptables"
+
+	"github.com/rs/zerolog/log"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
 )
 
 func (nh *Helper) cleanIPTables(ipt *iptables.IPTables) error {
@@ -66,5 +70,47 @@ func (nh *Helper) CleanIPTables() error {
 	var errs []error
 	errs = append(errs, nh.cleanIPTables(nh.IPTables4))
 	errs = append(errs, nh.cleanIPTables(nh.IPTables6))
+	errs = append(errs, nh.cleanIPRulesAndRoutes())
 	return errors.Join(errs...)
+}
+
+// cleanIPRulesAndRoutes удаляет ip rule и ip route, оставшиеся после аварийного
+// завершения. Все mark'и и table ID MagiTrickle начинаются с StartIdx (0x4D616769).
+func (nh *Helper) cleanIPRulesAndRoutes() error {
+	// Собираем таблицы из ip rules с нашими mark'ами
+	tables := make(map[int]struct{})
+
+	rules, err := netlink.RuleList(nl.FAMILY_ALL)
+	if err != nil {
+		return fmt.Errorf("failed to list ip rules: %w", err)
+	}
+	for _, rule := range rules {
+		if rule.Mark >= nh.StartIdx && rule.Mark < nh.StartIdx+0x10000 {
+			tables[rule.Table] = struct{}{}
+			if err := netlink.RuleDel(&rule); err != nil {
+				log.Warn().Err(err).Uint32("mark", rule.Mark).Int("table", rule.Table).Msg("failed to delete stale ip rule")
+			} else {
+				log.Info().Uint32("mark", rule.Mark).Int("table", rule.Table).Msg("cleaned stale ip rule")
+			}
+		}
+	}
+
+	// Удаляем routes из найденных таблиц
+	for table := range tables {
+		filter := &netlink.Route{Table: table}
+		routes, err := netlink.RouteListFiltered(nl.FAMILY_ALL, filter, netlink.RT_FILTER_TABLE)
+		if err != nil {
+			log.Warn().Err(err).Int("table", table).Msg("failed to list routes in stale table")
+			continue
+		}
+		for _, route := range routes {
+			if err := netlink.RouteDel(&route); err != nil {
+				log.Warn().Err(err).Int("table", table).Msg("failed to delete stale route")
+			} else {
+				log.Info().Int("table", table).Msg("cleaned stale route")
+			}
+		}
+	}
+
+	return nil
 }

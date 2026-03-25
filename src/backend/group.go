@@ -265,6 +265,16 @@ func (g *Group) Disable() error {
 }
 
 func (g *Group) sync() error {
+	syncStart := time.Now()
+	defer func() {
+		log.Debug().
+			Str("group", g.Name).
+			Str("id", g.ID.String()).
+			Int("rules", len(g.Rules)).
+			Dur("duration", time.Since(syncStart)).
+			Msg("group sync completed")
+	}()
+
 	now := time.Now()
 	newIPv4SubnetList := make(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout)
 	newIPv6SubnetList := make(map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout)

@@ -51,8 +51,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	}
 
 	/*
-		Direct mode: only mangle RETURN to bypass all MagiTrickle routing.
-		No filter, no NAT, no ip rule/route needed.
+		Direct mode: RETURN in both mangle and nat to bypass all MagiTrickle routing.
+		Must be in nat too, otherwise TPROXY TCP REDIRECT still catches the traffic.
+		No filter, no ip rule/route needed.
 	*/
 	if r.ifaceName == Direct {
 		err := ipt.RegisterChainOverride("mangle", r.chainName)
@@ -65,9 +66,26 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 			return fmt.Errorf("failed to append RETURN rule: %w", err)
 		}
 
-		err = ipt.Append("mangle", "PREROUTING", "-j", r.chainName)
+		// Insert at the top so direct always takes priority over other groups' chains.
+		err = ipt.Insert("mangle", "PREROUTING", 1, "-j", r.chainName)
 		if err != nil {
-			return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
+			return fmt.Errorf("failed to insert rule to PREROUTING: %w", err)
+		}
+
+		// Also insert RETURN in nat PREROUTING to prevent TPROXY TCP REDIRECT.
+		err = ipt.RegisterChainOverride("nat", r.chainName)
+		if err != nil {
+			return fmt.Errorf("failed to create nat chain: %w", err)
+		}
+
+		err = ipt.Append("nat", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "RETURN")
+		if err != nil {
+			return fmt.Errorf("failed to append nat RETURN rule: %w", err)
+		}
+
+		err = ipt.Insert("nat", "PREROUTING", 1, "-j", r.chainName)
+		if err != nil {
+			return fmt.Errorf("failed to insert rule to nat PREROUTING: %w", err)
 		}
 
 		err = ipt.Commit()
@@ -154,16 +172,26 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 	}
 	var errs []error
 
-	// Direct mode: only mangle chain exists.
+	// Direct mode: mangle + nat chains.
 	if r.ifaceName == Direct {
 		err := ipt.RegisterChainDelete("mangle", r.chainName)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to delete chain: %w", err))
+			errs = append(errs, fmt.Errorf("failed to delete mangle chain: %w", err))
 		}
 
 		err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
+			errs = append(errs, fmt.Errorf("failed to unlink mangle chain: %w", err))
+		}
+
+		err = ipt.RegisterChainDelete("nat", r.chainName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to delete nat chain: %w", err))
+		}
+
+		err = ipt.Delete("nat", "PREROUTING", "-j", r.chainName)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("failed to unlink nat chain: %w", err))
 		}
 
 		err = ipt.Commit()

@@ -156,28 +156,6 @@ func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) {
 	}
 }
 
-// evictIPv4FromOtherGroups removes an IPv4 address from all groups' ipsets
-// except the winner. This prevents stale ipset entries from previous DNS
-// lookups from interfering when a domain moves between groups.
-func (a *App) evictIPv4FromOtherGroups(winner *Group, subnet netfilterTools.IPv4Subnet) {
-	for _, g := range a.routingGroups() {
-		if g == winner || !g.Enabled() {
-			continue
-		}
-		_ = g.DelIPv4Subnet(subnet)
-	}
-}
-
-// evictIPv6FromOtherGroups is the IPv6 counterpart of evictIPv4FromOtherGroups.
-func (a *App) evictIPv6FromOtherGroups(winner *Group, subnet netfilterTools.IPv6Subnet) {
-	for _, g := range a.routingGroups() {
-		if g == winner || !g.Enabled() {
-			continue
-		}
-		_ = g.DelIPv6Subnet(subnet)
-	}
-}
-
 func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string) {
 	domainName := trimFQDN(aRecord.Hdr.Name)
 	addrStr := aRecord.A.String()
@@ -232,7 +210,6 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 						Str("cNameDomain", name).
 						Msg("failed to add subnet")
 				} else {
-					a.evictIPv4FromOtherGroups(group, subnet)
 					log.Debug().
 						Str("subnet", subnet.String()).
 						Str("aRecordDomain", domainName).
@@ -307,7 +284,6 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 						Str("cNameDomain", name).
 						Msg("failed to add subnet")
 				} else {
-					a.evictIPv6FromOtherGroups(group, subnet)
 					log.Debug().
 						Str("subnet", subnet.String()).
 						Str("aaaaRecordDomain", domainName).
@@ -384,8 +360,6 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 								Str("subnet", subnet.String()).
 								Str("cNameDomain", alias).
 								Msg("failed to add subnet")
-						} else {
-							a.evictIPv4FromOtherGroups(group, subnet)
 						}
 						log.Debug().
 							Str("subnet", subnet.String()).
@@ -399,8 +373,6 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 								Str("subnet", subnet.String()).
 								Str("cNameDomain", alias).
 								Msg("failed to add subnet")
-						} else {
-							a.evictIPv6FromOtherGroups(group, subnet)
 						}
 						log.Debug().
 							Str("subnet", subnet.String()).

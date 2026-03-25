@@ -316,3 +316,32 @@ func TestGetAliasesUnknownDomain(t *testing.T) {
 		t.Fatal("unknown domain should return only itself")
 	}
 }
+
+func TestCleanupNilsBackingArray(t *testing.T) {
+	r := New()
+	r.AddAddress("example.com", []byte{1, 1, 1, 1}, 0)  // expires
+	r.AddAddress("example.com", []byte{2, 2, 2, 2}, 0)  // expires
+	r.AddAddress("example.com", []byte{3, 3, 3, 3}, 60) // valid
+
+	time.Sleep(time.Second)
+	r.cleanupRecords()
+
+	r.locker.RLock()
+	addresses := r.addresses["example.com"]
+	r.locker.RUnlock()
+
+	if len(addresses) != 1 {
+		t.Fatalf("expected 1 valid address, got %d", len(addresses))
+	}
+	if !bytes.Equal(addresses[0].Address, []byte{3, 3, 3, 3}) {
+		t.Fatal("wrong address kept after cleanup")
+	}
+
+	// Проверяем что хвост backing array обнулён для GC
+	backing := addresses[:cap(addresses)]
+	for i := 1; i < len(backing); i++ {
+		if backing[i] != nil {
+			t.Fatalf("backing[%d] should be nil after cleanup", i)
+		}
+	}
+}

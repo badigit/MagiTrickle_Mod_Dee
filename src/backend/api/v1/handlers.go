@@ -433,10 +433,9 @@ func (h *Handler) PutGroup(w http.ResponseWriter, r *http.Request) {
 			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to enable group: %v", err))
 			return
 		}
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+		// Sync всех групп: изменённая группа получит новые IP,
+		// остальные — удалят stale IP из перенесённых правил.
+		h.app.SyncAllGroups()
 	}
 	utils.WriteJson(w, http.StatusOK, RespFromGroup(updatedGroup, true))
 	if r.URL.Query().Get("save") == "true" {
@@ -548,10 +547,7 @@ func (h *Handler) PutRules(w http.ResponseWriter, r *http.Request) {
 	}
 	groupWrapper.Model().Rules = newRules
 	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+		h.app.SyncAllGroups()
 	}
 	utils.WriteJson(w, http.StatusOK, RespFromRules(newRules))
 	if r.URL.Query().Get("save") == "true" {
@@ -659,10 +655,7 @@ func (h *Handler) PutRule(w http.ResponseWriter, r *http.Request) {
 	rule.Enable = req.Enable
 
 	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+		h.app.SyncAllGroups()
 	}
 	utils.WriteJson(w, http.StatusOK, RespFromRule(rule))
 	if r.URL.Query().Get("save") == "true" {

@@ -90,6 +90,17 @@ func (a *App) ClearGroups() {
 	a.groups.Store(&emptyGroups)
 }
 
+// SyncAllGroups пересинхронизирует ipset'ы всех активных групп.
+// Вызывается после изменения конфига групп, чтобы удалить stale IP
+// из ipset'ов групп, из которых правила были убраны.
+func (a *App) SyncAllGroups() {
+	for _, group := range a.routingGroups() {
+		if group.Enabled() {
+			_ = group.Sync()
+		}
+	}
+}
+
 // AddGroup добавляет новую группу
 func (a *App) AddGroup(groupModel *models.Group) error {
 	groups := *a.groups.Load()

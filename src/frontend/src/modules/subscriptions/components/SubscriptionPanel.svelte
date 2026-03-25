@@ -33,6 +33,7 @@
   import { getInterfaceLabel } from "../../../data/aliases.svelte";
   import { interfaces } from "../../../data/interfaces.svelte";
   import { t } from "../../../data/locale.svelte";
+  import { viewport } from "../../../data/viewport.svelte";
   import { SUBSCRIPTIONS_STORE_CONTEXT, type SubscriptionsStore } from "../subscriptions.svelte";
   import SubscriptionRuleRow from "./SubscriptionRuleRow.svelte";
 
@@ -65,8 +66,6 @@
   const PAGE_SIZE = 50;
   let currentPage = $state(1);
 
-  let client_width = $state<number>(Infinity);
-  let is_desktop = $derived(client_width > 668);
 
   let subscription = $derived(store.data[subscription_index]);
   let searchActive = $derived(store.searchActive);
@@ -224,8 +223,6 @@
   }
 </script>
 
-<svelte:window bind:innerWidth={client_width} />
-
 {#if subscription}
   <div
     class="subscription-panel"
@@ -315,7 +312,7 @@
           </div>
 
           <div class="action copy">
-            {#if is_desktop}
+            {#if viewport.isDesktop}
               <Tooltip value={t("Copy Group Entries")}>
                 <Button small onclick={copySubscriptionRules}>
                   <ClipboardCopy size={20} />
@@ -333,7 +330,7 @@
           </div>
 
           <div class="action delete">
-            {#if is_desktop}
+            {#if viewport.isDesktop}
               <Tooltip value={t("Delete Subscription")}>
                 <Button small onclick={() => store.deleteSubscription(subscription_index)}>
                   <Delete size={20} />

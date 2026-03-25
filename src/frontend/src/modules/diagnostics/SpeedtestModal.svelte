@@ -319,7 +319,7 @@
     eventSource = new EventSource(url);
 
     eventSource.addEventListener("status", (e) => handleEventData(e.data, (d) => (statusText = d)));
-    eventSource.addEventListener("error", (e) => {
+    eventSource.addEventListener("error", (e: MessageEvent) => {
       try {
         if (!e.data || e.data === "undefined") {
           retryTest();

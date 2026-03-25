@@ -161,17 +161,6 @@ export class GroupsStore {
       });
 
       $effect(() => {
-        this.dataRevision;
-        if (typeof window === "undefined") return;
-        setTimeout(() => this.checkRulesValidityState(), 10);
-      });
-
-      $effect(() => {
-        this.dataRevision;
-        this.syncSelectedGroups();
-      });
-
-      $effect(() => {
         const query = this.normalizedSearch;
         this.dataRevision;
         this.data.length;
@@ -573,6 +562,9 @@ export class GroupsStore {
 
   markDataRevision = () => {
     this.dataRevision += 1;
+    if (typeof window !== "undefined") {
+      setTimeout(() => this.checkRulesValidityState(), 10);
+    }
   };
 
   syncSelectedGroups() {

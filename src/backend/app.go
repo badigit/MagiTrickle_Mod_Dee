@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
+	"sync"
 	"sync/atomic"
 
 	"magitrickle/app"
@@ -13,7 +15,9 @@ import (
 	"magitrickle/utils/dnsMITMProxy"
 	"magitrickle/utils/netfilterTools"
 	"magitrickle/utils/recordsCache"
+	"magitrickle/utils/trie"
 
+	"github.com/IGLOU-EU/go-wildcard/v2"
 	"github.com/rs/zerolog/log"
 )
 
@@ -24,6 +28,12 @@ var (
 	ErrSubscriptionIDConflict   = errors.New("subscription id conflict")
 	ErrConfigUnsupportedVersion = errors.New("config unsupported version")
 )
+
+// WildcardRule holds a compiled wildcard pattern and its group.
+type WildcardRule struct {
+	Rule  string
+	Group *Group
+}
 
 // App – основная структура ядра приложения
 type App struct {
@@ -42,6 +52,11 @@ type App struct {
 	interfaceAliases map[string]string
 
 	dnsCapture *DNSCapture
+
+	domainTrie atomic.Value // holds *trie.Trie
+
+	wildcardRules       []*WildcardRule
+	wildcardRulesLocker sync.RWMutex
 }
 
 // New создаёт новый экземпляр App
@@ -63,7 +78,99 @@ func New() *App {
 	if err := a.LoadInterfaceConfig(); err != nil {
 		log.Error().Err(err).Msg("failed to load interface aliases")
 	}
+	a.domainTrie.Store(trie.New())
 	return a
+}
+
+// Trie returns the current domain trie.
+func (a *App) Trie() *trie.Trie {
+	return a.domainTrie.Load().(*trie.Trie)
+}
+
+// RebuildTrie rebuilds the domain trie and wildcard/regex rule lists
+// from all enabled routing groups. Call after any group/rule change.
+func (a *App) RebuildTrie() {
+	newTrie := trie.New()
+	var newWildcards []*WildcardRule
+
+	for _, g := range a.routingGroups() {
+		if !g.Enabled() || !g.Group.Enable {
+			continue
+		}
+		for _, rule := range g.Rules {
+			if !rule.IsEnabled() {
+				continue
+			}
+			switch rule.Type {
+			case models.RuleTypeDomain:
+				newTrie.Insert(rule.Rule, g, true)
+			case models.RuleTypeWildcard:
+				if strings.Contains(rule.Rule, "*") || strings.Contains(rule.Rule, "?") {
+					newWildcards = append(newWildcards, &WildcardRule{
+						Rule:  rule.Rule,
+						Group: g,
+					})
+				} else {
+					// wildcard without glob chars is effectively a namespace
+					cleanDomain := strings.TrimPrefix(rule.Rule, "*.")
+					newTrie.Insert(cleanDomain, g, false)
+				}
+			case models.RuleTypeNamespace:
+				newTrie.Insert(rule.Rule, g, false)
+			case models.RuleTypeRegEx:
+				// regex rules stay as fallback — compiled lazily in rule.IsMatch
+				// we don't add them to trie; they are checked in searchFallback
+			}
+		}
+	}
+	a.domainTrie.Store(newTrie)
+
+	a.wildcardRulesLocker.Lock()
+	a.wildcardRules = newWildcards
+	a.wildcardRulesLocker.Unlock()
+
+	log.Debug().
+		Int("wildcards", len(newWildcards)).
+		Msg("trie rebuilt")
+}
+
+// searchDomain looks up a domain in the trie, then falls back to wildcard and regex rules.
+func (a *App) searchDomain(domain string) (*Group, bool) {
+	// 1. Trie lookup — O(domain parts)
+	if data, found := a.Trie().Search(domain); found {
+		if g, ok := data.(*Group); ok && g.Enabled() && g.Group.Enable {
+			return g, true
+		}
+	}
+
+	// 2. Wildcard fallback
+	a.wildcardRulesLocker.RLock()
+	wRules := a.wildcardRules
+	a.wildcardRulesLocker.RUnlock()
+	for _, wr := range wRules {
+		if wildcard.Match(wr.Rule, domain) {
+			if wr.Group.Enabled() && wr.Group.Group.Enable {
+				return wr.Group, true
+			}
+		}
+	}
+
+	// 3. Regex fallback — iterate all groups, check only regex rules
+	for _, g := range a.routingGroups() {
+		if !g.Enabled() || !g.Group.Enable {
+			continue
+		}
+		for _, rule := range g.Rules {
+			if !rule.IsEnabled() || rule.Type != models.RuleTypeRegEx {
+				continue
+			}
+			if rule.IsMatch(domain) {
+				return g, true
+			}
+		}
+	}
+
+	return nil, false
 }
 
 // Config возвращает конфигурацию
@@ -90,10 +197,11 @@ func (a *App) ClearGroups() {
 	a.groups.Store(&emptyGroups)
 }
 
-// SyncAllGroups пересинхронизирует ipset'ы всех активных групп.
+// SyncAllGroups пересинхронизирует ipset'ы всех активных групп и перестраивает trie.
 // Вызывается после изменения конфига групп, чтобы удалить stale IP
 // из ipset'ов групп, из которых правила были убраны.
 func (a *App) SyncAllGroups() {
+	a.RebuildTrie()
 	for _, group := range a.routingGroups() {
 		if group.Enabled() {
 			_ = group.Sync()

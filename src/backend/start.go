@@ -127,6 +127,7 @@ func (a *App) Start(ctx context.Context) (err error) {
 			return fmt.Errorf("failed to sync group: %w", err)
 		}
 	}
+	a.RebuildTrie()
 	defer func() {
 		for _, group := range a.routingGroups() {
 			_ = group.Disable()

@@ -101,6 +101,7 @@ func NewRouter(a app.Main) chi.Router {
 			r.Post("/netfilterd", h.NetfilterDHook)
 		})
 	})
+	r.Post("/lookup", h.Lookup)
 	r.Route("/diagnostics", func(r chi.Router) {
 		r.Get("/speedtest", h.RunSpeedtest)
 		r.Get("/speedtest/servers", h.GetSpeedtestServers)

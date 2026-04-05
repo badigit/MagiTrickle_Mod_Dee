@@ -150,15 +150,23 @@
     input.value = "";
   }
 
-  async function handleImportRules(event: CustomEvent<{ group_index: number; rules: Rule[] }>) {
-    const { group_index, rules } = event.detail;
-    if (!rules.length) return;
+  async function handleImportRules(
+    event: CustomEvent<{ group_index: number; rules: Rule[]; skipped?: number }>,
+  ) {
+    const { group_index, rules, skipped = 0 } = event.detail;
+    if (!rules.length && !skipped) return;
 
     isImportingRules = true;
     await tick();
     try {
-      await store.addRulesToGroup(group_index, rules);
-      pendingToast = t("Imported rules: " + rules.length);
+      if (rules.length) {
+        await store.addRulesToGroup(group_index, rules);
+      }
+      let msg = t("Imported rules: " + rules.length);
+      if (skipped > 0) {
+        msg += ` (${t("Skipped duplicates: " + skipped)})`;
+      }
+      pendingToast = msg;
     } catch (error) {
       console.error("Failed to import rules:", error);
       toast.error(t("Failed to import rules"));
@@ -414,6 +422,7 @@
 <ImportRulesDialog
   open={importRulesModal.open}
   group_index={importRulesModal.groupIndex}
+  groups={store.data}
   on:close={closeImportRulesModal}
   on:import={handleImportRules}
 />

@@ -28,5 +28,4 @@ type IpsetHit struct {
 	GroupID   string `json:"group_id"`
 	GroupName string `json:"group_name"`
 	Source    string `json:"source"`
-	SetName   string `json:"set_name"`
 }

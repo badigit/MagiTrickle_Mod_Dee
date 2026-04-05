@@ -8,7 +8,7 @@
   import Select from "../../../components/ui/Select.svelte";
   import { t } from "../../../data/locale.svelte";
 
-  import { RULE_TYPES, type Rule } from "../../../types";
+  import { RULE_TYPES, type Rule, type Group } from "../../../types";
   import { defaultRule } from "../../../utils/defaults";
   import {
     isValidDomain,
@@ -21,7 +21,7 @@
     extractDomainFromUrl,
   } from "../../../utils/rule-validators";
 
-  let { open = $bindable(false), group_index = null } = $props();
+  let { open = $bindable(false), group_index = null, groups = [] as Group[] } = $props();
 
   const dispatch = createEventDispatcher();
 
@@ -101,6 +101,14 @@
   const RULE_TYPE_SELECT = [{ value: "auto", label: "Auto" }, ...RULE_TYPES];
   type RuleTypeValue = (typeof RULE_TYPE_SELECT)[number]["value"];
   let selectedRuleType = $state<RuleTypeValue>("auto");
+
+  type DedupMode = "current" | "all" | "none";
+  const DEDUP_OPTIONS: { value: DedupMode; label: string }[] = [
+    { value: "current", label: t("Current group") },
+    { value: "all", label: t("All groups") },
+    { value: "none", label: t("Don't check") },
+  ];
+  let dedupMode = $state<DedupMode>("current");
 
   let isEmpty = $derived(!import_rules_text.trim());
 
@@ -206,6 +214,23 @@
     isParsing = false;
   }
 
+  function buildExistingKeys(): Set<string> {
+    const keys = new Set<string>();
+    if (dedupMode === "none") return keys;
+
+    const sourcesGroups =
+      dedupMode === "all" ? groups : groups.filter((_, i) => i === group_index);
+
+    for (const g of sourcesGroups) {
+      for (const r of g.rules) {
+        if (r.rule && r.type) {
+          keys.add(`${r.type}|${r.rule.toLowerCase()}`);
+        }
+      }
+    }
+    return keys;
+  }
+
   function submit() {
     triedSubmit = true;
     if (group_index === null) return;
@@ -214,14 +239,21 @@
       ? getParsedData(import_rules_text, selectedRuleType)
       : allParsedLines;
 
+    const existingKeys = buildExistingKeys();
     const rules: Rule[] = [];
     const seen = new Set<string>();
+    let skipped = 0;
 
     currentParsed.forEach((l) => {
       const trimmed = l.text.trim();
       if (l.isValid && l.type && l.type !== "INVALID" && trimmed && !trimmed.startsWith("#")) {
-        const key = `${l.type}|${trimmed}`;
-        if (!seen.has(key)) {
+        const key = `${l.type}|${trimmed.toLowerCase()}`;
+        if (seen.has(key)) {
+          skipped++;
+        } else if (existingKeys.has(key)) {
+          seen.add(key);
+          skipped++;
+        } else {
           seen.add(key);
           rules.push({
             ...defaultRule(),
@@ -232,12 +264,16 @@
       }
     });
 
+    if (rules.length === 0 && skipped > 0) {
+      finishImport([], skipped);
+      return;
+    }
     if (rules.length === 0) return;
-    finishImport(rules);
+    finishImport(rules, skipped);
   }
 
-  function finishImport(rules: Rule[]) {
-    dispatch("import", { group_index, rules });
+  function finishImport(rules: Rule[], skipped = 0) {
+    dispatch("import", { group_index, rules, skipped });
     close();
   }
 
@@ -249,6 +285,7 @@
     triedSubmit = false;
     isEditing = true;
     selectedRuleType = "auto";
+    dedupMode = "current";
     dispatch("close");
   }
 
@@ -347,8 +384,12 @@
     {/if}
   </div>
 
-  <div slot="actions" class="rule-type-select">
-    <Select options={RULE_TYPE_SELECT} bind:selected={selectedRuleType} />
+  <div slot="actions" class="import-actions">
+    <div class="selects-row">
+      <Select options={RULE_TYPE_SELECT} bind:selected={selectedRuleType} />
+      <span class="dedup-label">{t("Dedup check")}:</span>
+      <Select options={DEDUP_OPTIONS} bind:selected={dedupMode} />
+    </div>
     <Button type="submit" onclick={submit} style="color: var(--text); font-size: 1rem;"
       >{t("Import")}</Button
     >
@@ -526,7 +567,7 @@
     line-height: 1.1;
   }
 
-  .rule-type-select {
+  .import-actions {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -534,8 +575,23 @@
     width: 100%;
   }
 
-  .rule-type-select :global(.select-root),
-  .rule-type-select :global(button) {
+  .selects-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .dedup-label {
+    font-size: 0.8rem;
+    color: var(--text-2);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .import-actions :global(.select-root),
+  .import-actions :global(button) {
     height: 2.5rem;
     font-size: 0.95rem;
     border: 1px solid var(--bg-light-extra);
@@ -544,16 +600,16 @@
     width: auto !important;
   }
 
-  .rule-type-select :global(.select-root) {
+  .selects-row :global(.select-root) {
     flex: 1 1 auto;
     min-width: 0;
   }
 
-  .rule-type-select :global(button) {
+  .import-actions :global(button) {
     flex: 0 0 auto;
   }
 
-  .rule-type-select :global([data-select-content]) {
+  .import-actions :global([data-select-content]) {
     z-index: 20;
   }
 
@@ -578,7 +634,7 @@
       padding-right: 0.75rem;
     }
 
-    .rule-type-select {
+    .import-actions {
       display: flex;
       align-items: center;
       justify-content: space-between;

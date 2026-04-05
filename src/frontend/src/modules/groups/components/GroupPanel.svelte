@@ -320,6 +320,8 @@
         </div>
 
         <div class="group-actions">
+          <ConflictBadge groupIndex={group_index} />
+
           <Select
             options={interfaces.list.map((item) => ({
               value: item,
@@ -331,8 +333,6 @@
           <Tooltip value={t(group.enable ? "Disable Group" : "Enable Group")}>
             <Switch class="enable-group" bind:checked={group.enable} />
           </Tooltip>
-
-          <ConflictBadge groupIndex={group_index} />
 
           {#if viewport.isDesktop}
             <Tooltip value={t("Copy Group Entries")}>

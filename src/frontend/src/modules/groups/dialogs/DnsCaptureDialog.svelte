@@ -36,6 +36,7 @@
   let active = $state(false);
   let domains = $state<CapturedDomain[]>([]);
   let liveCount = $state(0);
+  let filterIP = $state("");
   let pollTimer = $state<ReturnType<typeof setInterval> | null>(null);
   let selectedDomains = $state<Set<string>>(new Set());
   let subscriptions = $state<Subscription[]>([]);
@@ -102,7 +103,9 @@
 
   async function startCapture() {
     try {
-      const status = await fetcher.post<CaptureStatus>("/system/dns-capture/start", {});
+      const body: Record<string, string> = {};
+      if (filterIP.trim()) body.filter_ip = filterIP.trim();
+      const status = await fetcher.post<CaptureStatus>("/system/dns-capture/start", body);
       active = status.active;
       liveCount = 0;
       domains = [];
@@ -270,6 +273,12 @@
 
             <div class="capture-controls">
               {#if !active}
+                <input
+                  type="text"
+                  class="filter-ip-input"
+                  bind:value={filterIP}
+                  placeholder={t("Client IP filter")}
+                />
                 <Button class="accent" onclick={startCapture}>
                   <Radio size={16} />
                   {t("Start Capture")}
@@ -356,6 +365,28 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+  }
+
+  .filter-ip-input {
+    height: 2.2rem;
+    padding: 0 0.6rem;
+    border: 1.5px solid var(--bg-light-extra);
+    border-radius: 0.5rem;
+    background: var(--bg-light);
+    color: var(--text);
+    font-size: 0.9rem;
+    width: 10rem;
+    flex-shrink: 0;
+  }
+
+  .filter-ip-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .filter-ip-input::placeholder {
+    color: var(--text-2);
+    opacity: 0.6;
   }
 
   .live-count {

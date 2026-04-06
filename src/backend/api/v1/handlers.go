@@ -667,7 +667,13 @@ func (h *Handler) PutRule(w http.ResponseWriter, r *http.Request) {
 
 // StartDNSCapture запускает захват DNS-запросов.
 func (h *Handler) StartDNSCapture(w http.ResponseWriter, r *http.Request) {
-	h.app.DNSCapture().Start()
+	var filterIP string
+	if body, err := utils.ReadJson[struct {
+		FilterIP string `json:"filter_ip"`
+	}](r); err == nil {
+		filterIP = strings.TrimSpace(body.FilterIP)
+	}
+	h.app.DNSCapture().Start(filterIP)
 	utils.WriteJson(w, http.StatusOK, h.app.DNSCapture().Status(false))
 }
 

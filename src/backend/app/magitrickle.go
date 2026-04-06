@@ -28,7 +28,7 @@ type CaptureStatus struct {
 
 // DNSCapturer — интерфейс для захвата DNS-запросов.
 type DNSCapturer interface {
-	Start()
+	Start(filterIP string)
 	Stop()
 	IsActive() bool
 	Status(withDomains bool) CaptureStatus

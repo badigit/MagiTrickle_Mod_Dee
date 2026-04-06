@@ -1,6 +1,7 @@
 package magitrickle
 
 import (
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ type DNSCapture struct {
 	startedAt time.Time
 	mu        sync.Mutex
 	domains   map[string]int // domain → count
+	filterIP  string         // если не пусто, захватывать только от этого IP
 }
 
 // NewDNSCapture создаёт новый экземпляр DNSCapture.
@@ -25,11 +27,12 @@ func NewDNSCapture() *DNSCapture {
 	}
 }
 
-// Start начинает захват DNS-запросов.
-func (c *DNSCapture) Start() {
+// Start начинает захват DNS-запросов. filterIP — опциональный фильтр по IP клиента.
+func (c *DNSCapture) Start(filterIP string) {
 	c.mu.Lock()
 	c.domains = make(map[string]int)
 	c.startedAt = time.Now()
+	c.filterIP = filterIP
 	c.mu.Unlock()
 	c.active.Store(true)
 }
@@ -45,7 +48,8 @@ func (c *DNSCapture) IsActive() bool {
 }
 
 // Record записывает доменное имя, если захват активен.
-func (c *DNSCapture) Record(name string) {
+// clientIP — IP-адрес клиента, сделавшего запрос (может содержать порт).
+func (c *DNSCapture) Record(name string, clientIP string) {
 	if !c.active.Load() {
 		return
 	}
@@ -54,6 +58,17 @@ func (c *DNSCapture) Record(name string) {
 		return
 	}
 	c.mu.Lock()
+	if c.filterIP != "" {
+		host := clientIP
+		// Убираем порт если есть (например "192.168.1.5:12345")
+		if h, _, err := net.SplitHostPort(clientIP); err == nil {
+			host = h
+		}
+		if host != c.filterIP {
+			c.mu.Unlock()
+			return
+		}
+	}
 	c.domains[name]++
 	c.mu.Unlock()
 }

@@ -320,6 +320,7 @@ func (h *Handler) PutGroups(w http.ResponseWriter, r *http.Request) {
 			addErrors = append(addErrors, fmt.Sprintf("%s: %v", grp.Name, err))
 		}
 	}
+	h.app.SyncAllGroups()
 	if len(addErrors) > 0 {
 		utils.WriteJson(w, http.StatusOK, map[string]any{
 			"groups": RespFromGroups(newGroups, true).Groups,
@@ -363,6 +364,7 @@ func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	h.app.SyncAllGroups()
 	utils.WriteJson(w, http.StatusOK, RespFromGroup(group, true))
 	if r.URL.Query().Get("save") == "true" {
 		if err := h.app.SaveConfig(); err != nil {
@@ -467,6 +469,7 @@ func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.app.RemoveGroupByIndex(groupIdx)
+	h.app.SyncAllGroups()
 	if r.URL.Query().Get("save") == "true" {
 		if err := h.app.SaveConfig(); err != nil {
 			log.Error().Err(err).Msg("failed to save config file")
@@ -589,10 +592,7 @@ func (h *Handler) CreateRule(w http.ResponseWriter, r *http.Request) {
 	}
 	groupWrapper.Model().Rules = append(groupWrapper.Model().Rules, rule)
 	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+		h.app.SyncAllGroups()
 	}
 	utils.WriteJson(w, http.StatusOK, RespFromRule(rule))
 	if r.URL.Query().Get("save") == "true" {
@@ -778,10 +778,7 @@ func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 	ruleIdx, _ := strconv.Atoi(r.Header.Get("ruleIdx"))
 	groupWrapper.Model().Rules = append(groupWrapper.Model().Rules[:ruleIdx], groupWrapper.Model().Rules[ruleIdx+1:]...)
 	if enabled {
-		if err := groupWrapper.Sync(); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to sync group: %v", err))
-			return
-		}
+		h.app.SyncAllGroups()
 	}
 	if r.URL.Query().Get("save") == "true" {
 		if err := h.app.SaveConfig(); err != nil {

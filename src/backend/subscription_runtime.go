@@ -60,11 +60,9 @@ func (a *App) RebuildSubscriptionGroups() error {
 		if err := group.Enable(); err != nil {
 			return fmt.Errorf("failed to enable subscription group: %w", err)
 		}
-		if err := group.Sync(); err != nil {
-			return fmt.Errorf("failed to sync subscription group: %w", err)
-		}
 	}
 
+	a.SyncAllGroups()
 	return nil
 }
 

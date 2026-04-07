@@ -46,6 +46,7 @@ export default defineConfig(() => {
     define: {
       "import.meta.env.VITE_PKG_VERSION": JSON.stringify(version),
       "import.meta.env.VITE_PKG_VERSION_IS_DEV": JSON.stringify(isDevVersion),
+      "import.meta.env.VITE_BUILD_DATE": JSON.stringify(process.env.VITE_BUILD_DATE || ""),
     },
     plugins: [
       svelte({

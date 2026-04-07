@@ -21,12 +21,15 @@ ifeq ($(strip $(PKG_VERSION)),)
 	endif
 
 	COMMITS_SINCE_TAG := $(shell [ -n "$(TAG)" ] && git rev-list $(TAG)..HEAD --count 2>/dev/null || echo 0)
+	GIT_DIRTY := $(shell git diff --quiet HEAD 2>/dev/null && echo 0 || echo 1)
 	ifneq ($(or $(filter-out 0,$(COMMITS_SINCE_TAG)),$(if $(TAG),,1)),)
 		PKG_VERSION_PRERELEASE := $(shell v=$(PKG_VERSION); echo $${v%.*}.$$(( $${v##*.} + 1 )) )
 		PRERELEASE_DATE := $(shell date +%Y%m%d%H%M%S)
 		COMMIT := $(shell git rev-parse --short HEAD)
 
 		PKG_VERSION := $(PKG_VERSION_PRERELEASE)~git$(PRERELEASE_DATE).$(COMMIT)
+	else ifneq ($(GIT_DIRTY),0)
+		PKG_VERSION_PRERELEASE := $(PKG_VERSION)
 	endif
 endif
 # APK version: only digits, dots, and _pre/_alpha/_beta/_rc suffixes allowed.
@@ -86,7 +89,8 @@ GO_FLAGS := \
 	$(if $(GOARM),GOARM="$(GOARM)") \
 	$(if $(GO386),GO386="$(GO386)") \
 
-GO_PARAMS = -v -trimpath -ldflags="-X 'magitrickle/constant.Version=$(PKG_VERSION)' -w -s" $(if $(GO_TAGS),-tags "$(GO_TAGS)")
+BUILD_DATE := $(shell TZ=Europe/Moscow date '+%d.%m.%y %H:%M')
+GO_PARAMS = -v -trimpath -ldflags="-X 'magitrickle/constant.Version=$(PKG_VERSION)' -X 'magitrickle/constant.BuildDate=$(BUILD_DATE)' -w -s" $(if $(GO_TAGS),-tags "$(GO_TAGS)")
 
 # Incremental data
 
@@ -177,7 +181,7 @@ $(STAMPS_DIR)/build-properties-frontend: FORCE
 	@echo "$(FRONTEND_BUILD_PROPERTIES)" | cmp -s - $@ || echo "$(FRONTEND_BUILD_PROPERTIES)" > $@
 
 $(STAMPS_DIR)/build-frontend: $(STAMPS_DIR)/download-frontend $(FRONTEND_SOURCES) $(STAMPS_DIR)/build-properties-frontend
-	cd ./src/frontend && VITE_PKG_VERSION="$(PKG_VERSION)" VITE_PKG_VERSION_IS_DEV=$(if $(PKG_VERSION_PRERELEASE),true,false) npm run build
+	cd ./src/frontend && VITE_PKG_VERSION="$(PKG_VERSION)" VITE_PKG_VERSION_IS_DEV=$(if $(PKG_VERSION_PRERELEASE),true,false) VITE_BUILD_DATE="$(BUILD_DATE)" npm run build
 
 	@mkdir -p $(STAMPS_DIR)
 	@touch "$(STAMPS_DIR)/build-frontend"
@@ -212,11 +216,11 @@ prepare_files: build
 
 package:
 ifeq ($(PLATFORM),openwrt)
-	PKG_VERSION=$(PKG_VERSION) $(MAKE) package_ipk
-	PKG_VERSION=$(PKG_VERSION) $(MAKE) package_apk
+	PKG_VERSION=$(PKG_VERSION) PKG_VERSION_PRERELEASE=$(PKG_VERSION_PRERELEASE) $(MAKE) package_ipk
+	PKG_VERSION=$(PKG_VERSION) PKG_VERSION_PRERELEASE=$(PKG_VERSION_PRERELEASE) $(MAKE) package_apk
 endif
 ifeq ($(PLATFORM),entware)
-	PKG_VERSION=$(PKG_VERSION) $(MAKE) package_ipk
+	PKG_VERSION=$(PKG_VERSION) PKG_VERSION_PRERELEASE=$(PKG_VERSION_PRERELEASE) $(MAKE) package_ipk
 endif
 
 package_ipk: prepare_files

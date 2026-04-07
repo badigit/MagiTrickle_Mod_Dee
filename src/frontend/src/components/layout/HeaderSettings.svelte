@@ -8,6 +8,7 @@
   import { Info, Locale, LogOut } from "../ui/icons";
 
   const version = import.meta.env.VITE_PKG_VERSION || "0.0.0";
+  const buildDate = import.meta.env.VITE_BUILD_DATE || "";
   const isDev =
     import.meta.env.VITE_PKG_VERSION_IS_DEV?.toLowerCase() === "true" || version === "0.0.0";
 
@@ -27,8 +28,8 @@
 
 <div class="container">
   <div class="version">
-    <Tooltip value={`${t("build")}: ${version}`}>
-      <span class="version-text">{version}</span>
+    <Tooltip value={`${t("build")}: ${version}${buildDate ? `\n${buildDate}` : ""}`}>
+      <span class="version-text">{version}{#if isDev && buildDate}{" "}({buildDate}){/if}</span>
     </Tooltip>
     {#if isDev}
       <div class="under-construction">dev</div>

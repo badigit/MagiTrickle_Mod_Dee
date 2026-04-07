@@ -47,5 +47,6 @@ var DefaultAppConfig = models.AppConfig{
 }
 
 var (
-	Version = "unattached"
+	Version   = "unattached"
+	BuildDate = ""
 )

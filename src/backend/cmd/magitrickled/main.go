@@ -92,9 +92,11 @@ func main() {
 	zerolog.SetGlobalLevel(parseLogLevel())
 
 	log.Logger = log.Output(consoleLogger)
-	log.Info().
-		Str("version", constant.Version).
-		Msg("starting MagiTrickle daemon")
+	startLog := log.Info().Str("version", constant.Version)
+	if constant.BuildDate != "" {
+		startLog = startLog.Str("build", constant.BuildDate)
+	}
+	startLog.Msg("starting MagiTrickle daemon")
 
 	pid, err := checkPIDFile()
 	if err != nil {

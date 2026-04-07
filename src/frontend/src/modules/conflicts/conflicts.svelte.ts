@@ -116,6 +116,7 @@ export class ConflictsStore {
   count = $derived(this.conflicts.length);
 
   #subscriptions = $state<Subscription[]>([]);
+  #debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private groupsStore: GroupsStore) {
     this.#dispose = $effect.root(() => {
@@ -123,7 +124,8 @@ export class ConflictsStore {
         void this.groupsStore.dataRevision;
         void this.groupsStore.data;
         void this.#subscriptions;
-        this.#compute();
+        if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
+        this.#debounceTimer = setTimeout(() => this.#compute(), 300);
       });
     });
     this.#loadSubscriptions();
@@ -139,6 +141,7 @@ export class ConflictsStore {
   }
 
   destroy() {
+    if (this.#debounceTimer) clearTimeout(this.#debounceTimer);
     if (this.#dispose) {
       this.#dispose();
       this.#dispose = null;

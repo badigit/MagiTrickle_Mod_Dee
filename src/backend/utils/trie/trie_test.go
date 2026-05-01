@@ -48,6 +48,34 @@ func TestLongestMatch(t *testing.T) {
 	}
 }
 
+// TestFirstInsertWins фиксирует приоритет порядка групп в конфиге:
+// при коллизии одинаковых правил между группами выигрывает первая.
+func TestFirstInsertWins(t *testing.T) {
+	tr := New()
+	tr.Insert("google.com", "groupA", true)
+	tr.Insert("google.com", "groupB", true) // должен быть проигнорирован
+
+	data, ok := tr.Search("google.com")
+	if !ok || data != "groupA" {
+		t.Fatalf("first insert should win, got %v", data)
+	}
+}
+
+// TestExactNamespaceCoexist фиксирует, что exact и namespace на одну и ту же
+// строку сосуществуют: на самом домене побеждает exact, на поддомене — namespace.
+func TestExactNamespaceCoexist(t *testing.T) {
+	tr := New()
+	tr.Insert("google.com", "EXACT", true)
+	tr.Insert("google.com", "NS", false)
+
+	if data, ok := tr.Search("google.com"); !ok || data != "EXACT" {
+		t.Fatalf("exact should win on the leaf, got %v ok=%v", data, ok)
+	}
+	if data, ok := tr.Search("mail.google.com"); !ok || data != "NS" {
+		t.Fatalf("namespace should match subdomain, got %v ok=%v", data, ok)
+	}
+}
+
 func BenchmarkTrieSearch(b *testing.B) {
 	tr := New()
 	for i := 0; i < 4000; i++ {
@@ -56,6 +84,23 @@ func BenchmarkTrieSearch(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		tr.Search("sub.domainA.example.com")
+	}
+}
+
+// BenchmarkTrieMixed — exact и namespace на одних и тех же доменных строках
+// (горячий сценарий, ради которого узел теперь хранит два слота).
+func BenchmarkTrieMixed(b *testing.B) {
+	tr := New()
+	tlds := []string{"com", "ru", "org", "net", "io"}
+	for i := 0; i < 2000; i++ {
+		d := "service" + string(rune('a'+i%26)) + string(rune('0'+i%10)) + "." + tlds[i%len(tlds)]
+		tr.Insert(d, i, true)  // exact
+		tr.Insert(d, i, false) // namespace на ту же строку
+	}
+	hit := "sub.servicea0.com"
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		tr.Search(hit)
 	}
 }
 

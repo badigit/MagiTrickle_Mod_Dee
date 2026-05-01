@@ -5,13 +5,18 @@ import (
 	"sync"
 )
 
-// TrieNode represents a node in the Trie
+// TrieNode represents a node in the Trie.
+// Each node holds independent slots for an exact-match entry and a namespace-match
+// entry, so two rules with the same domain string but different semantics coexist
+// instead of overwriting each other.
 type TrieNode struct {
 	children map[string]*TrieNode
-	// data holds the arbitrary data associated with the domain (e.g., pointer to Group)
-	data    interface{}
-	isEnd   bool
-	isExact bool // true = Domain, false = Namespace
+
+	isExactEnd bool
+	exactData  interface{}
+
+	isNamespaceEnd bool
+	namespaceData  interface{}
 }
 
 // Trie is a thread-safe prefix tree for domain matching
@@ -30,8 +35,11 @@ func New() *Trie {
 }
 
 // Insert adds a domain to the Trie with associated data.
-// Domains are stored in reverse part order: "google.com" -> "com" -> "google"
+// Domains are stored in reverse part order: "google.com" -> "com" -> "google".
 // exact: if true, this rule will NOT match subdomains (strict domain match).
+//
+// First insert wins per slot (exact / namespace) — matches iptables chain priority,
+// so the routing decision in trie agrees with which iptables chain handles the packet.
 func (t *Trie) Insert(domain string, data interface{}, exact bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -39,7 +47,6 @@ func (t *Trie) Insert(domain string, data interface{}, exact bool) {
 	parts := strings.Split(domain, ".")
 	node := t.root
 
-	// Insert in reverse order
 	for i := len(parts) - 1; i >= 0; i-- {
 		part := parts[i]
 		if node.children[part] == nil {
@@ -49,13 +56,23 @@ func (t *Trie) Insert(domain string, data interface{}, exact bool) {
 		}
 		node = node.children[part]
 	}
-	node.isEnd = true
-	node.isExact = exact
-	node.data = data
+
+	if exact {
+		if !node.isExactEnd {
+			node.isExactEnd = true
+			node.exactData = data
+		}
+	} else {
+		if !node.isNamespaceEnd {
+			node.isNamespaceEnd = true
+			node.namespaceData = data
+		}
+	}
 }
 
 // Search looks up a domain in the Trie.
-// Returns the data associated with the longest matching suffix (or exact match).
+// Returns the data associated with the longest matching suffix; exact match on the
+// leaf wins over a namespace match on the same node.
 func (t *Trie) Search(domain string) (interface{}, bool) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -75,15 +92,12 @@ func (t *Trie) Search(domain string) (interface{}, bool) {
 		}
 		node = nextNode
 
-		if node.isEnd {
-			if node.isExact {
-				if i == 0 {
-					return node.data, true
-				}
-			} else {
-				lastMatchData = node.data
-				found = true
-			}
+		if node.isNamespaceEnd {
+			lastMatchData = node.namespaceData
+			found = true
+		}
+		if i == 0 && node.isExactEnd {
+			return node.exactData, true
 		}
 	}
 

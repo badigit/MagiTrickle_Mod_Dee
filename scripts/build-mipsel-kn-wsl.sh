@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Если запущено из Git Bash (MSYS2/MinGW) — перезапуск через WSL,
+# где есть make и Linux-окружение для кросс-компиляции.
+if [[ "${MSYSTEM:-}" == MINGW* ]]; then
+  ROOT_WIN="$(cygpath -w "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)")"
+  SCRIPT_REL="scripts/$(basename "${BASH_SOURCE[0]}")"
+  echo "[wrapper] Re-launching under WSL: $SCRIPT_REL"
+  exec wsl --cd "$ROOT_WIN" -- bash "$SCRIPT_REL" "$@"
+fi
+
 # fnm (node version manager) — нужен node >=20 для vite 7
 FNM_PATH="${HOME}/.local/share/fnm"
 if [ -d "$FNM_PATH" ]; then

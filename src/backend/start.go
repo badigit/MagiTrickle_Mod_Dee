@@ -17,6 +17,7 @@ import (
 	"magitrickle/utils/recordsCache"
 
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
 	"github.com/vishvananda/netlink/nl"
 )
@@ -105,34 +106,24 @@ func (a *App) Start(ctx context.Context) (err error) {
 		interfaceAddrs = append(interfaceAddrs, linkAddrList...)
 	}
 
+	// Always prepare dnsOverrider object so Pause/Resume can toggle it later,
+	// even if the config initially has Enabled=false.
 	if !a.config.DNSProxy.DisableRemap53 {
 		a.dnsOverrider = a.nfHelper.PortRemap("DNSOR", 53, a.config.DNSProxy.Host.Port, interfaceAddrs)
-		if err := a.dnsOverrider.Enable(); err != nil {
-			return fmt.Errorf("failed to override DNS: %v", err)
-		}
-		defer func() {
-			_ = a.dnsOverrider.Disable()
-		}()
 	}
 
 	if err := a.RebuildSubscriptionGroups(); err != nil {
 		return fmt.Errorf("failed to prepare subscription groups: %w", err)
 	}
 
-	for _, group := range a.routingGroups() {
-		if err := group.Enable(); err != nil {
-			return fmt.Errorf("failed to enable group: %w", err)
+	if a.config.Enabled {
+		if err := a.bringUpRouting(); err != nil {
+			return err
 		}
-		if err := group.Sync(); err != nil {
-			return fmt.Errorf("failed to sync group: %w", err)
-		}
+	} else {
+		log.Warn().Msg("MagiTrickle started with app.enabled=false — routing is paused")
 	}
-	a.RebuildTrie()
-	defer func() {
-		for _, group := range a.routingGroups() {
-			_ = group.Disable()
-		}
-	}()
+	defer func() { _ = a.bringDownRouting() }()
 
 	a.startSubscriptionSyncLoop(newCtx, errChan)
 

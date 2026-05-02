@@ -3,6 +3,7 @@ package models
 import "time"
 
 type AppConfig struct {
+	Enabled           bool
 	HTTPWeb           AppConfigHTTPWeb
 	DNSProxy          AppConfigDNSProxy
 	Netfilter         AppConfigNetfilter

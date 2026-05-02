@@ -7,6 +7,7 @@ import (
 )
 
 var DefaultAppConfig = models.AppConfig{
+	Enabled: true,
 	DNSProxy: models.AppConfigDNSProxy{
 		Host:            models.AppConfigDNSProxyServer{Address: "[::]", Port: 3553},
 		Upstream:        models.AppConfigDNSProxyServer{Address: "127.0.0.1", Port: 53},

@@ -1,0 +1,202 @@
+<script lang="ts">
+  import { onMount, onDestroy } from "svelte";
+  import { t, locale } from "../../data/locale.svelte";
+  import { routing } from "../../data/routing.svelte";
+  import { fetcher } from "../../utils/fetcher";
+  import { overlay, toast } from "../../utils/events";
+  import Button from "../../components/ui/Button.svelte";
+  import Switch from "../../components/ui/Switch.svelte";
+  import { RefreshCw } from "../../components/ui/icons";
+
+  const RELOAD_DELAY_MS = 8000;
+
+  type SystemInfo = { started_at: string; uptime_seconds: number };
+
+  let busy = $state(false);
+  let startedAt = $state<Date | null>(null);
+  let now = $state(Date.now());
+  let timer: ReturnType<typeof setInterval> | null = null;
+
+  let uptime = $derived.by(() => {
+    if (!startedAt) return null;
+    return Math.max(0, Math.floor((now - startedAt.getTime()) / 1000));
+  });
+
+  const UNITS_RU = { d: "д", h: "ч", m: "м", s: "с" };
+  const UNITS_EN = { d: "d", h: "h", m: "m", s: "s" };
+  let units = $derived(locale.state.value === "ru" ? UNITS_RU : UNITS_EN);
+
+  function formatUptime(s: number | null): string {
+    if (s == null) return "—";
+    const d = Math.floor(s / 86400);
+    const h = Math.floor((s % 86400) / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const parts: string[] = [];
+    if (d) parts.push(`${d}${units.d}`);
+    if (d || h) parts.push(`${h}${units.h}`);
+    if (d || h || m) parts.push(`${m}${units.m}`);
+    parts.push(`${sec}${units.s}`);
+    return parts.join(" ");
+  }
+
+  async function loadInfo() {
+    try {
+      const info = await fetcher.get<SystemInfo>("/system/info");
+      startedAt = new Date(info.started_at);
+      now = Date.now();
+    } catch {
+      // toast уже показан фетчером
+    }
+  }
+
+  onMount(() => {
+    loadInfo();
+    routing.load();
+    timer = setInterval(() => (now = Date.now()), 1000);
+  });
+
+  async function onRoutingToggle(checked: boolean) {
+    await routing.setEnabled(checked);
+  }
+
+  onDestroy(() => {
+    if (timer) clearInterval(timer);
+  });
+
+  async function handleRestart() {
+    if (busy) return;
+    if (!confirm(t("Restart magitrickled service?"))) return;
+
+    busy = true;
+    overlay.show(t("Restarting service..."));
+    try {
+      await fetcher.post("/system/restart", {});
+      toast.success(t("Service restart initiated"));
+    } catch {
+      overlay.hide();
+      busy = false;
+      return;
+    }
+    setTimeout(() => window.location.reload(), RELOAD_DELAY_MS);
+  }
+</script>
+
+<div class="settings">
+  <section class="card" class:card-off={routing.state.loaded && !routing.state.enabled}>
+    <div class="row">
+      <div class="info">
+        <h3>
+          {routing.state.enabled ? t("MagiTrickle is on") : t("MagiTrickle is paused")}
+        </h3>
+        <p class="hint">{t("MT toggle hint")}</p>
+      </div>
+      <Switch
+        checked={routing.state.enabled}
+        disabled={routing.state.busy || !routing.state.loaded}
+        onCheckedChange={onRoutingToggle}
+        aria-label={t("MagiTrickle on/off")}
+      />
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <div class="info">
+        <h3>{t("Restart service")}</h3>
+        <p class="hint">{t("Restarts magitrickled. The page will reload automatically.")}</p>
+        <p class="uptime">
+          <span class="uptime-label">{t("Uptime")}:</span>
+          <span class="uptime-value">{formatUptime(uptime)}</span>
+          {#if startedAt}
+            <span class="uptime-since">({t("since")} {startedAt.toLocaleString()})</span>
+          {/if}
+        </p>
+      </div>
+      <Button onclick={handleRestart} inactive={busy}>
+        <RefreshCw size={18} />
+        {t("Restart")}
+      </Button>
+    </div>
+  </section>
+</div>
+
+<style>
+  .settings {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+
+  .card {
+    border: 1px solid var(--border-light);
+    border-radius: 8px;
+    padding: 1rem 1.2rem;
+    background: var(--bg-card, transparent);
+    transition: border-color 0.2s, background 0.2s;
+  }
+
+  .card.card-off {
+    border-color: var(--orange, #c79030);
+    background: color-mix(in srgb, var(--orange, #c79030) 8%, transparent);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  h3 {
+    margin: 0 0 0.25rem 0;
+    font-size: 1.05rem;
+    font-weight: 600;
+  }
+
+  .hint {
+    margin: 0;
+    color: var(--text-2);
+    font-size: 0.9rem;
+    line-height: 1.4;
+  }
+
+  .uptime {
+    margin: 0.6rem 0 0 0;
+    font-size: 0.85rem;
+    color: var(--text-2);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: baseline;
+  }
+
+  .uptime-label {
+    color: var(--text-3, var(--text-2));
+  }
+
+  .uptime-value {
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    font-weight: 500;
+  }
+
+  .uptime-since {
+    color: var(--text-3, var(--text-2));
+    font-size: 0.8rem;
+  }
+
+  @media (max-width: 540px) {
+    .row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
+</style>

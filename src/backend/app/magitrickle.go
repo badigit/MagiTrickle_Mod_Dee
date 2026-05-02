@@ -59,6 +59,10 @@ type Main interface {
 	SyncAllGroups()
 	DNSCapture() DNSCapturer
 	Start(ctx context.Context) (err error)
+	Restart()
+	StartedAt() time.Time
+	IsRoutingActive() bool
+	SetEnabled(enabled bool) error
 }
 
 type Group interface {

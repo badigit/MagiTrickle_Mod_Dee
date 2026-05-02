@@ -1,6 +1,7 @@
 package config
 
 type App struct {
+	Enabled           *bool      `yaml:"enabled"`
 	HTTPWeb           *HTTPWeb   `yaml:"httpWeb"`
 	DNSProxy          *DNSProxy  `yaml:"dnsProxy"`
 	Netfilter         *Netfilter `yaml:"netfilter"`

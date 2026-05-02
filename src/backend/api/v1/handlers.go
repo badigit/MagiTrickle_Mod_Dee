@@ -689,6 +689,76 @@ func (h *Handler) GetDNSCaptureStatus(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, http.StatusOK, h.app.DNSCapture().Status(withDomains))
 }
 
+// SetEnabled
+//
+//	@Summary		Глобальный тумблер MagiTrickle
+//	@Description	Включает или выключает захват и маршрутизацию. Когда выключено,
+//	                трафик ходит мимо MagiTrickle (DNSOR снят, группы выключены).
+//	@Tags			system
+//	@Accept			json
+//	@Produce		json
+//	@Param			json	body		object	true	"{enabled: bool}"
+//	@Success		200
+//	@Failure		400		{object}	types.ErrorRes
+//	@Failure		500		{object}	types.ErrorRes
+//	@Router			/api/v1/system/enabled [post]
+func (h *Handler) SetEnabled(w http.ResponseWriter, r *http.Request) {
+	type req struct {
+		Enabled bool `json:"enabled"`
+	}
+	body, err := utils.ReadJson[req](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.app.SetEnabled(body.Enabled); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, map[string]bool{"enabled": h.app.IsRoutingActive()})
+}
+
+// GetEnabled
+//
+//	@Summary		Состояние глобального тумблера
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/enabled [get]
+func (h *Handler) GetEnabled(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, map[string]bool{"enabled": h.app.IsRoutingActive()})
+}
+
+// GetSystemInfo
+//
+//	@Summary		Системная информация
+//	@Description	Возвращает время старта процесса и аптайм в секундах.
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/info [get]
+func (h *Handler) GetSystemInfo(w http.ResponseWriter, r *http.Request) {
+	startedAt := h.app.StartedAt()
+	utils.WriteJson(w, http.StatusOK, map[string]any{
+		"started_at":     startedAt.UTC().Format(time.RFC3339),
+		"uptime_seconds": int64(time.Since(startedAt).Seconds()),
+	})
+}
+
+// RestartService
+//
+//	@Summary		Перезапустить сервис
+//	@Description	Запускает init.d-скрипт и завершает текущий процесс,
+//	                чтобы супервизор поднял свежий magitrickled.
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/restart [post]
+func (h *Handler) RestartService(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, map[string]string{"status": "restarting"})
+	h.app.Restart()
+}
+
 // GetTProxyStatus возвращает диагностику TPROXY.
 func (h *Handler) GetTProxyStatus(w http.ResponseWriter, r *http.Request) {
 	port := h.app.Config().Netfilter.TProxyPort

@@ -459,8 +459,8 @@ func (r *IPSetToTProxy) ClearIfDisabled() error {
 	return errors.Join(errs...)
 }
 
-// LinkUpdateHook is a no-op for TPROXY (does not depend on interface state).
-func (r *IPSetToTProxy) LinkUpdateHook(_ netlink.LinkUpdate) error {
+// LinkUpHook is a no-op for TPROXY (does not depend on interface state).
+func (r *IPSetToTProxy) LinkUpHook(_ netlink.LinkUpdate) error {
 	return nil
 }
 

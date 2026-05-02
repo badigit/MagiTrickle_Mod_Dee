@@ -343,6 +343,13 @@ func (r *IPSetToLink) insertIPRoute() error {
 				Table:     r.table,
 				Dst:       &net.IPNet{IP: []byte{0, 0, 0, 0}, Mask: []byte{0, 0, 0, 0}},
 			}
+			if iface.Attrs().Flags&net.FlagPointToPoint == 0 {
+				if gw, err := getGwFromIface(iface, nl.FAMILY_V4); err != nil {
+					log.Warn().Str("iface", r.ifaceName).Err(err).Msg("IPv4 gateway not found")
+				} else {
+					route.Gw = gw
+				}
+			}
 			err = netlink.RouteAdd(route)
 			if err != nil && !errors.Is(err, unix.EEXIST) {
 				return fmt.Errorf("error while adding ipv4 iface route: %w", err)
@@ -386,6 +393,13 @@ func (r *IPSetToLink) insertIPRoute() error {
 				Dst:       &net.IPNet{IP: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, Mask: []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
 				Family:    nl.FAMILY_V6,
 			}
+			if iface.Attrs().Flags&net.FlagPointToPoint == 0 {
+				if gw, err := getGwFromIface(iface, nl.FAMILY_V6); err != nil {
+					log.Warn().Str("iface", r.ifaceName).Err(err).Msg("IPv6 gateway not found")
+				} else {
+					route.Gw = gw
+				}
+			}
 			err = netlink.RouteAdd(route)
 			if err != nil && !errors.Is(err, unix.EEXIST) {
 				return fmt.Errorf("error while adding ipv6 iface route: %w", err)
@@ -395,6 +409,25 @@ func (r *IPSetToLink) insertIPRoute() error {
 	}
 
 	return nil
+}
+
+// getGwFromIface ищет шлюз, прописанный на интерфейсе для указанного семейства.
+// Нужен для broadcast-интерфейсов (eth/wifi): без явного Gw маршрут default
+// через них не работает на части конфигураций. Для PointToPoint-iface (VPN)
+// шлюз не нужен и вызывать не надо.
+func getGwFromIface(iface netlink.Link, family int) (net.IP, error) {
+	routes, err := netlink.RouteListFiltered(family, &netlink.Route{
+		LinkIndex: iface.Attrs().Index,
+	}, netlink.RT_FILTER_OIF)
+	if err != nil {
+		return nil, err
+	}
+	for _, route := range routes {
+		if route.Gw != nil {
+			return route.Gw, nil
+		}
+	}
+	return nil, fmt.Errorf("no gateway found for interface %s", iface.Attrs().Name)
 }
 
 func (r *IPSetToLink) deleteIPRoute() error {

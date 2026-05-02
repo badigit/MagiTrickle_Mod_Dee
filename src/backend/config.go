@@ -91,6 +91,9 @@ func (a *App) ImportConfig(cfg config.Config) error {
 	}
 
 	if cfg.App != nil {
+		if cfg.App.Enabled != nil {
+			a.config.Enabled = *cfg.App.Enabled
+		}
 		if cfg.App.HTTPWeb != nil {
 			if cfg.App.HTTPWeb.Enabled != nil {
 				a.config.HTTPWeb.Enabled = *cfg.App.HTTPWeb.Enabled
@@ -341,6 +344,7 @@ func (a *App) ExportConfig() config.Config {
 	return config.Config{
 		ConfigVersion: "0.1.3",
 		App: &config.App{
+			Enabled: &a.config.Enabled,
 			HTTPWeb: &config.HTTPWeb{
 				Enabled: &a.config.HTTPWeb.Enabled,
 				Auth: &config.Auth{

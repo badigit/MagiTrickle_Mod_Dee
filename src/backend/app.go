@@ -4,10 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
+	"time"
 
 	"magitrickle/app"
 	"magitrickle/constant"
@@ -37,7 +41,9 @@ type WildcardRule struct {
 
 // App – основная структура ядра приложения
 type App struct {
-	enabled atomic.Bool
+	enabled        atomic.Bool // Start вызван
+	routingActive  atomic.Bool // routing+DNSOR подняты (false когда пользователь нажал паузу)
+	startedAt      time.Time
 
 	config models.AppConfig
 
@@ -62,6 +68,7 @@ type App struct {
 // New создаёт новый экземпляр App
 func New() *App {
 	a := &App{
+		startedAt:        time.Now(),
 		config:           constant.DefaultAppConfig,
 		interfaceAliases: make(map[string]string),
 		dnsCapture:       NewDNSCapture(),
@@ -307,4 +314,109 @@ func (a *App) SetInterfaceAliases(aliases map[string]string) {
 	for k, v := range aliases {
 		a.interfaceAliases[k] = v
 	}
+}
+
+// StartedAt returns the moment when this process was created.
+func (a *App) StartedAt() time.Time {
+	return a.startedAt
+}
+
+// IsRoutingActive reports whether MagiTrickle is currently capturing/routing
+// traffic (DnsOverrider + groups enabled).
+func (a *App) IsRoutingActive() bool {
+	return a.routingActive.Load()
+}
+
+// bringUpRouting enables DNS port-remap and all routing groups, syncs IPSet
+// from the in-memory DNS cache. Idempotent: safe to call when already up.
+func (a *App) bringUpRouting() error {
+	if !a.routingActive.CompareAndSwap(false, true) {
+		return nil
+	}
+
+	if a.dnsOverrider != nil {
+		if err := a.dnsOverrider.Enable(); err != nil {
+			a.routingActive.Store(false)
+			return fmt.Errorf("failed to override DNS: %w", err)
+		}
+	}
+
+	for _, group := range a.routingGroups() {
+		if err := group.Enable(); err != nil {
+			a.routingActive.Store(false)
+			return fmt.Errorf("failed to enable group %s: %w", group.Name, err)
+		}
+		if err := group.Sync(); err != nil {
+			log.Warn().Err(err).Str("group", group.Name).Msg("group sync after enable returned error")
+		}
+	}
+	a.RebuildTrie()
+	log.Info().Msg("routing brought up")
+	return nil
+}
+
+// bringDownRouting tears down dnsOverrider and disables all routing groups.
+// Idempotent: no-op when already down.
+func (a *App) bringDownRouting() error {
+	if !a.routingActive.CompareAndSwap(true, false) {
+		return nil
+	}
+
+	for _, group := range a.routingGroups() {
+		if err := group.Disable(); err != nil {
+			log.Warn().Err(err).Str("group", group.Name).Msg("group disable failed")
+		}
+	}
+
+	if a.dnsOverrider != nil {
+		if err := a.dnsOverrider.Disable(); err != nil {
+			log.Warn().Err(err).Msg("dnsOverrider disable failed")
+		}
+	}
+	log.Info().Msg("routing brought down")
+	return nil
+}
+
+// SetEnabled toggles routing on/off and persists the choice to config.
+// When enabled=false, traffic flows as if MagiTrickle were not running.
+func (a *App) SetEnabled(enabled bool) error {
+	if a.config.Enabled == enabled && a.routingActive.Load() == enabled {
+		return nil
+	}
+
+	if enabled {
+		if err := a.bringUpRouting(); err != nil {
+			return err
+		}
+	} else {
+		_ = a.bringDownRouting()
+	}
+
+	a.config.Enabled = enabled
+	if err := a.SaveConfig(); err != nil {
+		log.Error().Err(err).Msg("failed to persist app.enabled")
+		return err
+	}
+	return nil
+}
+
+// Restart spawns a detached shell that calls the platform restart command,
+// then exits the current process so the init.d/procd supervisor brings
+// magitrickled back up with fresh configuration.
+func (a *App) Restart() {
+	log.Info().Str("cmd", constant.RestartCommand).Msg("restart requested via API")
+
+	cmd := exec.Command("sh", "-c", "sleep 1; "+constant.RestartCommand)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		log.Error().Err(err).Msg("failed to start restart command")
+		return
+	}
+	go func() { _ = cmd.Wait() }()
+
+	go func() {
+		time.Sleep(3 * time.Second)
+		log.Info().Msg("exiting process to let supervisor restart it")
+		os.Exit(0)
+	}()
 }

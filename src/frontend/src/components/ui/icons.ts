@@ -1,3 +1,5 @@
+export { default as Settings } from "lucide-svelte/icons/settings";
+export { default as RefreshCw } from "lucide-svelte/icons/refresh-cw";
 export { default as GroupExpand } from "lucide-svelte/icons/square-plus";
 export { default as GroupCollapse } from "lucide-svelte/icons/square-minus";
 export { default as SelectOpen } from "lucide-svelte/icons/chevron-down";

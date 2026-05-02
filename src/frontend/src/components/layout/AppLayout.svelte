@@ -4,17 +4,17 @@
   import { t } from "../../data/locale.svelte";
   import GroupsView from "../../modules/groups/GroupsView.svelte";
   import InterfacesView from "../../modules/interfaces/InterfacesView.svelte";
+  import SettingsView from "../../modules/settings/SettingsView.svelte";
   import SubscriptionsView from "../../modules/subscriptions/SubscriptionsView.svelte";
   import { persistedState } from "../../utils/persisted-state.svelte";
   // import LogsPanel from "../../modules/logs/LogsPanel.svelte";
-  // import SettingsPanel from "../../modules/settings/SettingsPanel.svelte";
   import Overlay from "../feedback/Overlay.svelte";
   import ScrollToTop from "../feedback/ScrollToTop.svelte";
   import SnowField from "../feedback/SnowField.svelte";
   import Toast from "../feedback/Toast.svelte";
   import HeaderSettings from "./HeaderSettings.svelte";
 
-  import { LayoutList, Menu, Network, RSS } from "../ui/icons";
+  import { LayoutList, Menu, Network, RSS, Settings } from "../ui/icons";
 
   const lastActiveTab = persistedState("active_tab", "groups");
   let active_tab = $state(lastActiveTab.current);
@@ -75,11 +75,10 @@
               <span class="tab-icon"><Network size={24} /></span>
               {t("Interfaces")}
             </Tabs.Trigger>
-
-            <!--
-            <Tabs.Trigger value="settings" onclick={closeMenu}>Settings</Tabs.Trigger>
-            <Tabs.Trigger value="logs" onclick={closeMenu}>Logs</Tabs.Trigger>
-            -->
+            <Tabs.Trigger value="settings" class="settings-tab" onclick={closeMenu} aria-label={t("Settings")}>
+              <span class="tab-icon"><Settings size={24} /></span>
+              <span class="settings-label">{t("Settings")}</span>
+            </Tabs.Trigger>
           </Tabs.List>
         </div>
       </div>
@@ -99,7 +98,9 @@
       <Tabs.Content value="interfaces">
         <InterfacesView visible={active_tab === "interfaces"} />
       </Tabs.Content>
-      <!-- <Tabs.Content value="settings">...</Tabs.Content> -->
+      <Tabs.Content value="settings">
+        <SettingsView />
+      </Tabs.Content>
     </article>
   </Tabs.Root>
 </main>
@@ -174,6 +175,16 @@
 
   .tab-icon {
     display: flex;
+  }
+
+  /* Settings: только шестерня на десктопе, текст в моб-меню */
+  :global([data-tabs-trigger].settings-tab) .settings-label {
+    display: none;
+  }
+  @media (max-width: 700px) {
+    :global([data-tabs-trigger].settings-tab) .settings-label {
+      display: inline;
+    }
   }
 
   :global([data-tabs-trigger][data-state="active"]) {

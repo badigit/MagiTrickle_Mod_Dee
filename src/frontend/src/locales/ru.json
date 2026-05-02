@@ -173,5 +173,17 @@
   "Not configured": "Не настроен",
   "DNS Capture Hint": "Нажмите «Начать захват», затем откройте нужные приложения. После остановки вы увидите список доменов.",
   "Speedtest failed, retrying...": "Ошибка теста скорости, повторяем...",
-  "Direct": "Напрямую"
+  "Direct": "Напрямую",
+  "Restart": "Перезапустить",
+  "Restart service": "Перезапуск сервиса",
+  "Restarts magitrickled. The page will reload automatically.": "Перезапустит magitrickled. Страница перезагрузится автоматически.",
+  "MagiTrickle is on": "MagiTrickle включён",
+  "MagiTrickle is paused": "MagiTrickle на паузе",
+  "MT toggle hint": "Когда выключено, MagiTrickle не перехватывает DNS и не маршрутизирует трафик — всё работает как будто его нет. Состояние сохраняется при перезапуске.",
+  "MagiTrickle on/off": "Тумблер MagiTrickle",
+  "Restart magitrickled service?": "Перезапустить сервис magitrickled?",
+  "Restarting service...": "Перезапускаем сервис...",
+  "Service restart initiated": "Перезапуск инициирован",
+  "Uptime": "Аптайм",
+  "since": "с"
 }

@@ -2,6 +2,7 @@ package magitrickle
 
 import (
 	"fmt"
+	"net"
 	"slices"
 
 	"magitrickle/constant"
@@ -25,12 +26,19 @@ func subscribeLinkUpdates() (chan netlink.LinkUpdate, chan struct{}, error) {
 func (a *App) handleLink(event netlink.LinkUpdate) {
 	switch event.Header.Type {
 	case unix.RTM_NEWLINK:
-		ifaceName := event.Link.Attrs().Name
+		linkAttrs := event.Link.Attrs()
+		// Только UP-события: интерфейс может появиться сначала в DOWN и
+		// дойти до UP позже отдельным NEWLINK; вызывать LinkUpHook на
+		// down-интерфейсе бессмысленно (route не установится).
+		if linkAttrs.Flags&net.FlagUp == 0 {
+			break
+		}
+		ifaceName := linkAttrs.Name
 		if !slices.Contains(constant.IgnoredInterfaces, ifaceName) {
 			log.Debug().
 				Str("interface", ifaceName).
 				Int("type", int(event.Header.Type)).
-				Msg("interface add")
+				Msg("interface up")
 		}
 		for _, group := range a.routingGroups() {
 			if group.Group.EffectiveRouteMode() != models.RouteModeInterface {
@@ -39,7 +47,7 @@ func (a *App) handleLink(event netlink.LinkUpdate) {
 			if group.Interface != ifaceName {
 				continue
 			}
-			if err := group.LinkUpdateHook(event); err != nil {
+			if err := group.LinkUpHook(event); err != nil {
 				log.Error().
 					Err(err).
 					Str("group", group.ID.String()).

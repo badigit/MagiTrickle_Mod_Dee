@@ -77,5 +77,5 @@ type Group interface {
 	Enable() error
 	Disable() error
 	Sync() error
-	LinkUpdateHook(event netlink.LinkUpdate) error
+	LinkUpHook(event netlink.LinkUpdate) error
 }

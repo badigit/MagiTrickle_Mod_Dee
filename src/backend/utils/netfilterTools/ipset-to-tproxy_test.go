@@ -199,11 +199,11 @@ func TestInsertIPTablesRulesNilIPTables(t *testing.T) {
 	}
 }
 
-func TestLinkUpdateHookIsNoop(t *testing.T) {
+func TestLinkUpHookIsNoop(t *testing.T) {
 	r := &IPSetToTProxy{}
-	err := r.LinkUpdateHook(netlink.LinkUpdate{})
+	err := r.LinkUpHook(netlink.LinkUpdate{})
 	if err != nil {
-		t.Errorf("LinkUpdateHook should be no-op, got: %v", err)
+		t.Errorf("LinkUpHook should be no-op, got: %v", err)
 	}
 }
 

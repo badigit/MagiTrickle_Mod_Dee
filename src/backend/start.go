@@ -75,6 +75,15 @@ func (a *App) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}
 
+	// Subscribe to link updates BEFORE bringing routing up, otherwise an
+	// interface that comes online during the bring-up window would not
+	// trigger LinkUpHook and our route on it would never get installed.
+	linkUpdateChannel, linkUpdateDone, err := subscribeLinkUpdates()
+	if err != nil {
+		return err
+	}
+	defer close(linkUpdateDone)
+
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errChan := make(chan error)
@@ -126,12 +135,6 @@ func (a *App) Start(ctx context.Context) (err error) {
 	defer func() { _ = a.bringDownRouting() }()
 
 	a.startSubscriptionSyncLoop(newCtx, errChan)
-
-	linkUpdateChannel, linkUpdateDone, err := subscribeLinkUpdates()
-	if err != nil {
-		return err
-	}
-	defer close(linkUpdateDone)
 
 	for {
 		select {

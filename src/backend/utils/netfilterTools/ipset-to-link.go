@@ -67,7 +67,8 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		}
 
 		// Insert at the top so direct always takes priority over other groups' chains.
-		err = ipt.Insert("mangle", "PREROUTING", 1, "-j", r.chainName)
+		// Exclude loopback: router-local traffic must not enter MagiTrickle routing.
+		err = ipt.Insert("mangle", "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)
 		if err != nil {
 			return fmt.Errorf("failed to insert rule to PREROUTING: %w", err)
 		}
@@ -83,7 +84,7 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 			return fmt.Errorf("failed to append nat RETURN rule: %w", err)
 		}
 
-		err = ipt.Insert("nat", "PREROUTING", 1, "-j", r.chainName)
+		err = ipt.Insert("nat", "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)
 		if err != nil {
 			return fmt.Errorf("failed to insert rule to nat PREROUTING: %w", err)
 		}
@@ -135,7 +136,10 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		}
 	}
 
-	err = ipt.Append("mangle", "PREROUTING", "-j", r.chainName)
+	// Exclude loopback: router-local traffic must not enter MagiTrickle routing,
+	// otherwise router's own packets to addresses in the ipset (e.g. 127.0.0.1
+	// from a poisoned subscription) get marked and routed via VPN table.
+	err = ipt.Append("mangle", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
 	}
@@ -179,7 +183,7 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 			errs = append(errs, fmt.Errorf("failed to delete mangle chain: %w", err))
 		}
 
-		err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
+		err = ipt.Delete("mangle", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to unlink mangle chain: %w", err))
 		}
@@ -189,7 +193,7 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 			errs = append(errs, fmt.Errorf("failed to delete nat chain: %w", err))
 		}
 
-		err = ipt.Delete("nat", "PREROUTING", "-j", r.chainName)
+		err = ipt.Delete("nat", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to unlink nat chain: %w", err))
 		}
@@ -224,7 +228,7 @@ func (r *IPSetToLink) deleteIPTablesRules(ipt *iptables.IPTables) error {
 		errs = append(errs, fmt.Errorf("failed to delete chain: %w", err))
 	}
 
-	err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
+	err = ipt.Delete("mangle", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlinking chain: %w", err))
 	}

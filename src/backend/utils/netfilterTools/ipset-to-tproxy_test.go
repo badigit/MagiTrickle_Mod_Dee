@@ -58,7 +58,7 @@ func TestInsertIPTablesRulesIPv4(t *testing.T) {
 	// nat/PREROUTING must jump to our chain
 	natPreRules := fake.GetRules("nat", "PREROUTING")
 	expectedNatPre := [][]string{
-		{"-j", "MT_TEST"},
+		{"!", "-i", "lo", "-j", "MT_TEST"},
 	}
 	if !reflect.DeepEqual(natPreRules, expectedNatPre) {
 		t.Errorf("nat/PREROUTING rules mismatch.\nExpected: %v\nGot:      %v", expectedNatPre, natPreRules)
@@ -81,7 +81,7 @@ func TestInsertIPTablesRulesIPv4(t *testing.T) {
 	// mangle/PREROUTING must jump to our chain
 	manglePreRules := fake.GetRules("mangle", "PREROUTING")
 	expectedManglePre := [][]string{
-		{"-j", "MT_TEST"},
+		{"!", "-i", "lo", "-j", "MT_TEST"},
 	}
 	if !reflect.DeepEqual(manglePreRules, expectedManglePre) {
 		t.Errorf("mangle/PREROUTING rules mismatch.\nExpected: %v\nGot:      %v", expectedManglePre, manglePreRules)
@@ -204,6 +204,37 @@ func TestLinkUpdateHookIsNoop(t *testing.T) {
 	err := r.LinkUpdateHook(netlink.LinkUpdate{})
 	if err != nil {
 		t.Errorf("LinkUpdateHook should be no-op, got: %v", err)
+	}
+}
+
+// TestPREROUTINGExcludesLoopback verifies that nat/PREROUTING and mangle/PREROUTING
+// jumps to the MagiTrickle chain are guarded by `! -i lo` to prevent router-local
+// traffic from being hijacked.
+//
+// Regression: a poisoned subscription (e.g. opencck.org whatsapp returning
+// 126.0.0.0/7 which covers 127.0.0.0/8) put 127.0.0.1 into the ipset, which
+// caused router's own DNS queries to 127.0.0.1:53 to be looped through TPROXY
+// → mihomo → VPN, exhausting CPU.
+func TestPREROUTINGExcludesLoopback(t *testing.T) {
+	r, fake := newTProxyTestFixture(iptables.ProtocolIPv4)
+
+	if err := r.insertIPTablesRules(r.nh.IPTables4); err != nil {
+		t.Fatalf("insertIPTablesRules failed: %v", err)
+	}
+	if err := r.nh.IPTables4.Commit(); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	for _, table := range []string{"nat", "mangle"} {
+		rules := fake.GetRules(table, "PREROUTING")
+		if len(rules) != 1 {
+			t.Fatalf("%s/PREROUTING: want 1 rule, got %d: %v", table, len(rules), rules)
+		}
+		got := rules[0]
+		want := []string{"!", "-i", "lo", "-j", "MT_TEST"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("%s/PREROUTING jump must exclude loopback.\nWant: %v\nGot:  %v", table, want, got)
+		}
 	}
 }
 

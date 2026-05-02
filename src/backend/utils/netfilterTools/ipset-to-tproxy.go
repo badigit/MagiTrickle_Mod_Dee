@@ -70,7 +70,10 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 		return fmt.Errorf("failed to append TCP REDIRECT rule: %w", err)
 	}
 
-	err = ipt.Append("nat", "PREROUTING", "-j", r.chainName)
+	// Exclude loopback: router-local traffic must not be hijacked into TPROXY,
+	// otherwise router's own packets to 127.0.0.1 (e.g. magitrickled→ndnproxy:53)
+	// matched by --match-set dst loop back through TPROXY.
+	err = ipt.Append("nat", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to append rule to nat/PREROUTING: %w", err)
 	}
@@ -116,7 +119,7 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 		return fmt.Errorf("failed to append UDP TPROXY rule: %w", err)
 	}
 
-	err = ipt.Append("mangle", "PREROUTING", "-j", r.chainName)
+	err = ipt.Append("mangle", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to append rule to mangle/PREROUTING: %w", err)
 	}
@@ -143,7 +146,7 @@ func (r *IPSetToTProxy) deleteIPTablesRules(ipt *iptables.IPTables) error {
 		errs = append(errs, fmt.Errorf("failed to delete nat chain: %w", err))
 	}
 
-	err = ipt.Delete("nat", "PREROUTING", "-j", r.chainName)
+	err = ipt.Delete("nat", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlink nat chain: %w", err))
 	}
@@ -157,7 +160,7 @@ func (r *IPSetToTProxy) deleteIPTablesRules(ipt *iptables.IPTables) error {
 		errs = append(errs, fmt.Errorf("failed to delete mangle chain: %w", err))
 	}
 
-	err = ipt.Delete("mangle", "PREROUTING", "-j", r.chainName)
+	err = ipt.Delete("mangle", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("failed to unlink mangle chain: %w", err))
 	}

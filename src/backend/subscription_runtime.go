@@ -25,7 +25,7 @@ func (a *App) routingGroups() []*Group {
 
 func (a *App) RebuildSubscriptionGroups() error {
 	oldGroups := *a.subscriptionGroups.Load()
-	if a.enabled.Load() {
+	if a.routingActive.Load() {
 		for _, group := range oldGroups {
 			_ = group.Disable()
 		}
@@ -52,7 +52,7 @@ func (a *App) RebuildSubscriptionGroups() error {
 
 	a.subscriptionGroups.Store(&newGroups)
 
-	if !a.enabled.Load() || a.nfHelper == nil {
+	if !a.routingActive.Load() || a.nfHelper == nil {
 		return nil
 	}
 

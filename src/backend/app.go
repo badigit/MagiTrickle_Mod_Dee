@@ -247,8 +247,8 @@ func (a *App) AddGroup(groupModel *models.Group) error {
 		Str("name", grp.Name).
 		Msg("added group")
 
-	// если приложение уже запущено – включаем группу и синхронизируем ipset
-	if a.enabled.Load() {
+	// если routing активен – включаем группу и синхронизируем ipset
+	if a.routingActive.Load() {
 		if err = grp.Enable(); err != nil {
 			return fmt.Errorf("failed to enable group: %w", err)
 		}

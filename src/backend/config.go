@@ -283,10 +283,8 @@ func (a *App) ImportConfig(cfg config.Config) error {
 		}
 	}
 
-	if a.enabled.Load() {
-		if err := a.RebuildSubscriptionGroups(); err != nil {
-			return fmt.Errorf("failed to rebuild subscription groups: %w", err)
-		}
+	if err := a.RebuildSubscriptionGroups(); err != nil {
+		return fmt.Errorf("failed to rebuild subscription groups: %w", err)
 	}
 
 	return nil

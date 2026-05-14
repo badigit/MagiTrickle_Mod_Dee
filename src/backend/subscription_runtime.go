@@ -66,6 +66,28 @@ func (a *App) RebuildSubscriptionGroups() error {
 	return nil
 }
 
+// rulesEquivalent reports whether two rule lists describe the same set of
+// rules. ID and Name are ignored because FetchRules generates a fresh random
+// ID on every fetch and Name is not provided by the source format.
+func rulesEquivalent(a, b []*models.Rule) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		x, y := a[i], b[i]
+		if x == nil || y == nil {
+			if x != y {
+				return false
+			}
+			continue
+		}
+		if x.Type != y.Type || x.Rule != y.Rule || x.Enable != y.Enable {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *App) startSubscriptionSyncLoop(ctx context.Context, _ chan error) {
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -105,6 +127,14 @@ func (a *App) syncDueSubscriptions(ctx context.Context) error {
 				Str("subscriptionId", subscription.ID.String()).
 				Str("url", subscription.URL).
 				Msg("failed to auto-sync subscription")
+			continue
+		}
+
+		if rulesEquivalent(subscription.Rules, rules) {
+			// Source unchanged — bump in-memory timestamp so we don't refetch
+			// on every ticker, but skip group rebuild and config write to avoid
+			// resetting ipsets and flash wear.
+			subscription.LastUpdate = now.UnixMilli()
 			continue
 		}
 

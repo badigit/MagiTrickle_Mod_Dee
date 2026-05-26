@@ -20,6 +20,10 @@ import (
 const (
 	FetchTimeout         = 20 * time.Second
 	FetchFallbackTimeout = 8 * time.Second
+	// maxRedirects — лимит на количество HTTP-редиректов при загрузке
+	// подписки. Стандартный http.Client допускает 10 без детекции петель,
+	// что позволяет недобросовестному источнику гонять клиента впустую.
+	maxRedirects = 5
 )
 
 // FetchRules fetches subscription rules from the given URL.
@@ -109,7 +113,11 @@ func doFetch(ctx context.Context, url, ifaceName string, timeout time.Duration) 
 		transport.DialContext = dialer.DialContext
 	}
 
-	client := &http.Client{Timeout: timeout, Transport: transport}
+	client := &http.Client{
+		Timeout:       timeout,
+		Transport:     transport,
+		CheckRedirect: checkRedirect,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -121,6 +129,21 @@ func doFetch(ctx context.Context, url, ifaceName string, timeout time.Duration) 
 	}
 
 	return resp, nil
+}
+
+// checkRedirect ограничивает количество HTTP-редиректов и обнаруживает
+// циклы. Применяется в обоих путях загрузки (прямом и через интерфейсы).
+func checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxRedirects {
+		return fmt.Errorf("too many redirects (>%d)", maxRedirects)
+	}
+	target := req.URL.String()
+	for _, prev := range via {
+		if prev.URL.String() == target {
+			return fmt.Errorf("redirect loop detected at %s", target)
+		}
+	}
+	return nil
 }
 
 func parseRulesFromBody(resp *http.Response) ([]*models.Rule, error) {

@@ -1,7 +1,6 @@
 package recordsCache
 
 import (
-	"bytes"
 	"context"
 	"net"
 	"sync"
@@ -78,7 +77,7 @@ func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
 
 	addresses := r.addresses[domainName]
 	for _, aRecord := range addresses {
-		if bytes.Equal(aRecord.Address, addr) {
+		if aRecord.Address.Equal(addr) {
 			aRecord.Deadline = deadline
 			return
 		}

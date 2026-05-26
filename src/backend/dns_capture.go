@@ -11,6 +11,13 @@ import (
 	"magitrickle/app"
 )
 
+// maxCapturedDomains ограничивает размер карты захваченных доменов.
+// Защита от OOM при долгом захвате на роутерах с малым объёмом RAM
+// и при DNS-флуде случайными subdomain'ами (DGA, сканеры).
+// При достижении лимита новые домены игнорируются; счётчики уже
+// захваченных продолжают обновляться.
+const maxCapturedDomains = 10000
+
 // DNSCapture собирает уникальные доменные имена из DNS-запросов.
 type DNSCapture struct {
 	active    atomic.Bool
@@ -68,6 +75,10 @@ func (c *DNSCapture) Record(name string, clientIP string) {
 			c.mu.Unlock()
 			return
 		}
+	}
+	if _, ok := c.domains[name]; !ok && len(c.domains) >= maxCapturedDomains {
+		c.mu.Unlock()
+		return
 	}
 	c.domains[name]++
 	c.mu.Unlock()

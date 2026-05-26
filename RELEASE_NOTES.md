@@ -22,5 +22,5 @@
 
 ```sh
 opkg update && opkg install wget-ssl ca-certificates
-wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle/mod_badigit/scripts/install.sh | sh
+wget -qO- https://raw.githubusercontent.com/badigit/MagiTrickle_mod_badigit/mod_badigit/scripts/install.sh | sh
 ```

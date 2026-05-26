@@ -11,9 +11,10 @@ if [[ "${MSYSTEM:-}" == MINGW* ]]; then
 fi
 
 # fnm (node version manager) — нужен node >=20 для vite 7
-FNM_PATH="${HOME}/.local/share/fnm"
-if [ -d "$FNM_PATH" ]; then
-  export PATH="$FNM_PATH:$PATH"
+# Стандартная установка: бинарник в ~/.local/bin/fnm, данные в ~/.local/share/fnm/.
+FNM_BIN_DIR="${HOME}/.local/bin"
+if [ -x "$FNM_BIN_DIR/fnm" ]; then
+  export PATH="$FNM_BIN_DIR:$PATH"
   eval "$(fnm env --shell bash)"
 fi
 

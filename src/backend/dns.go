@@ -112,6 +112,9 @@ func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.M
 	// фильтрация записей AAAA
 	filteredAnswers := make([]dns.RR, 0, len(respMsg.Answer))
 	for _, answer := range respMsg.Answer {
+		if answer == nil {
+			continue
+		}
 		if answer.Header().Rrtype != dns.TypeAAAA {
 			filteredAnswers = append(filteredAnswers, answer)
 		}

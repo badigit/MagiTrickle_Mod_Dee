@@ -46,6 +46,16 @@ func (a *App) Start(ctx context.Context) (err error) {
 	)
 	a.dnsMITM.RequestHook = a.dnsRequestHook
 	a.dnsMITM.ResponseHook = a.dnsResponseHook
+
+	// dual-upstream: out-of-group домены идут в FallbackUpstream (например ndnproxy 127.0.0.1:53),
+	// минуя primary (mihomo). Subnet-rules продолжают работать post-resolve независимо от пути.
+	if fb := a.config.DNSProxy.FallbackUpstream; fb != nil {
+		a.dnsMITM.SetFallback(
+			net.JoinHostPort(fb.Address, strconv.Itoa(int(fb.Port))),
+			a.config.DNSProxy.MaxIdleConns,
+		)
+		a.dnsMITM.UpstreamSelector = a.selectUpstream
+	}
 	defer func() {
 		if a.dnsMITM != nil {
 			_ = a.dnsMITM.Close()

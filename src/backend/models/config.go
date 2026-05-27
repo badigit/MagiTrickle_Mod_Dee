@@ -29,14 +29,15 @@ type AppConfigHTTPWebServer struct {
 }
 
 type AppConfigDNSProxy struct {
-	Host            AppConfigDNSProxyServer
-	Upstream        AppConfigDNSProxyServer
-	DisableRemap53  bool
-	DisableFakePTR  bool
-	DisableDropAAAA bool
-	MaxIdleConns    uint
-	MaxConcurrent   uint
-	Timeout         time.Duration
+	Host             AppConfigDNSProxyServer
+	Upstream         AppConfigDNSProxyServer
+	FallbackUpstream *AppConfigDNSProxyServer // если задан — out-of-group домены идут сюда (минуя primary)
+	DisableRemap53   bool
+	DisableFakePTR   bool
+	DisableDropAAAA  bool
+	MaxIdleConns     uint
+	MaxConcurrent    uint
+	Timeout          time.Duration
 }
 
 type AppConfigDNSProxyServer struct {

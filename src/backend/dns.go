@@ -23,6 +23,29 @@ func formatID(id uint16) string {
 	})
 }
 
+// selectUpstream решает в какой апстрим отправить DNS-запрос:
+//   - есть match по domain/namespace/wildcard/regex в любой группе → primary (mihomo)
+//   - нет match (или нет вопросов в req) → fallback (например ndnproxy)
+//
+// Subnet-правила здесь игнорируются (Rule.IsMatch для них возвращает false), потому
+// что IP неизвестен до резолвинга — для subnet matching используется post-resolve
+// path в processARecord, который работает независимо от выбора апстрима.
+//
+// Вызывается из dnsMITMProxy.processReq → возвращает true если нужен fallback.
+func (a *App) selectUpstream(req dns.Msg) bool {
+	if len(req.Question) == 0 {
+		return true // нечего матчить — fallback (DNS должен ответить как-то)
+	}
+	name := trimFQDN(req.Question[0].Name)
+	if name == "" {
+		return true
+	}
+	if _, ok := a.searchDomain(name); ok {
+		return false // matched любой группой — primary upstream (mihomo)
+	}
+	return true // нет matched group — fallback (ndnproxy)
+}
+
 func trimFQDN(name string) string {
 	if len(name) > 0 && name[len(name)-1] == '.' {
 		return name[:len(name)-1]

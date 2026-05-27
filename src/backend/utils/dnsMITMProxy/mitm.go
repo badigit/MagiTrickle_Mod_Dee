@@ -26,14 +26,23 @@ type DNSMITMProxy struct {
 	RequestHook  func(net.Addr, dns.Msg, string) (*dns.Msg, *dns.Msg, error)
 	ResponseHook func(net.Addr, dns.Msg, dns.Msg, string) (*dns.Msg, error)
 
+	// UpstreamSelector — опциональный per-request выбор upstream'а.
+	// Если возвращает true и fallbackAddr задан, запрос идёт во вторичный апстрим
+	// (например ndnproxy на 127.0.0.1:53), минуя primary (mihomo).
+	UpstreamSelector func(req dns.Msg) bool
+
 	// Private fields
-	bufferPool  *sync.Pool
-	udpConnPool *connPool
-	semaphore   chan struct{}
-	timeout     time.Duration
-	upstreamAddr string
+	bufferPool          *sync.Pool
+	udpConnPool         *connPool
+	udpConnPoolFallback *connPool
+	semaphore           chan struct{}
+	timeout             time.Duration
+	upstreamAddr        string
+	fallbackAddr        string
 }
 
+// NewDNSMITMProxy создаёт прокси с одним primary upstream'ом.
+// Для fallback-апстрима используй SetFallback после конструктора.
 func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time.Duration) *DNSMITMProxy {
 	return &DNSMITMProxy{
 		bufferPool: &sync.Pool{
@@ -49,24 +58,43 @@ func NewDNSMITMProxy(addr string, maxIdleConns, maxConcurrent uint, timeout time
 	}
 }
 
+// SetFallback включает второй upstream и UDP-пул на тот же maxIdleConns.
+// Должен вызываться до Listen* (потокобезопасно только до старта).
+func (p *DNSMITMProxy) SetFallback(addr string, maxIdleConns uint) {
+	if addr == "" {
+		return
+	}
+	p.fallbackAddr = addr
+	p.udpConnPoolFallback = newConnPool("udp", addr, maxIdleConns)
+}
+
 // Close closes all connection pools and releases resources
 func (p *DNSMITMProxy) Close() error {
 	if p.udpConnPool != nil {
 		p.udpConnPool.Close()
 	}
+	if p.udpConnPoolFallback != nil {
+		p.udpConnPoolFallback.Close()
+	}
 	return nil
 }
 
-func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, network string) ([]byte, error) {
-	if network == "tcp" {
-		return p.requestUpstreamTCP(ctx, req)
+func (p *DNSMITMProxy) requestUpstreamDNS(ctx context.Context, req []byte, network string, useFallback bool) ([]byte, error) {
+	addr := p.upstreamAddr
+	pool := p.udpConnPool
+	if useFallback && p.fallbackAddr != "" {
+		addr = p.fallbackAddr
+		pool = p.udpConnPoolFallback
 	}
-	return p.requestUpstreamUDP(ctx, req)
+	if network == "tcp" {
+		return p.requestUpstreamTCP(ctx, req, addr)
+	}
+	return p.requestUpstreamUDP(ctx, req, pool)
 }
 
-func (p *DNSMITMProxy) requestUpstreamTCP(ctx context.Context, req []byte) ([]byte, error) {
+func (p *DNSMITMProxy) requestUpstreamTCP(ctx context.Context, req []byte, addr string) ([]byte, error) {
 	var d net.Dialer
-	conn, err := d.DialContext(ctx, "tcp", p.upstreamAddr)
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial DNS upstream: %w", err)
 	}
@@ -108,8 +136,8 @@ func (p *DNSMITMProxy) requestUpstreamTCP(ctx context.Context, req []byte) ([]by
 	return resp, nil
 }
 
-func (p *DNSMITMProxy) requestUpstreamUDP(ctx context.Context, req []byte) ([]byte, error) {
-	conn, err := p.udpConnPool.Get(ctx)
+func (p *DNSMITMProxy) requestUpstreamUDP(ctx context.Context, req []byte, pool *connPool) ([]byte, error) {
+	conn, err := pool.Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial DNS upstream: %w", err)
 	}
@@ -140,7 +168,7 @@ func (p *DNSMITMProxy) requestUpstreamUDP(ctx context.Context, req []byte) ([]by
 	resp := make([]byte, n)
 	copy(resp, buf[:n])
 
-	p.udpConnPool.Put(conn)
+	pool.Put(conn)
 	return resp, nil
 }
 
@@ -151,7 +179,8 @@ func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req 
 	}
 
 	var reqMsg dns.Msg
-	if p.RequestHook != nil || p.ResponseHook != nil {
+	needParse := p.RequestHook != nil || p.ResponseHook != nil || p.UpstreamSelector != nil
+	if needParse {
 		err := reqMsg.Unpack(req)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse request: %w", err)
@@ -184,7 +213,12 @@ func (p *DNSMITMProxy) processReq(ctx context.Context, clientAddr net.Addr, req 
 		return nil, ctx.Err()
 	}
 
-	resp, err := p.requestUpstreamDNS(ctx, req, network)
+	useFallback := false
+	if p.UpstreamSelector != nil && p.fallbackAddr != "" {
+		useFallback = p.UpstreamSelector(reqMsg)
+	}
+
+	resp, err := p.requestUpstreamDNS(ctx, req, network, useFallback)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}

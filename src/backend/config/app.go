@@ -27,14 +27,15 @@ type HTTPWebServer struct {
 }
 
 type DNSProxy struct {
-	Host            *DNSProxyServer `yaml:"host"`
-	Upstream        *DNSProxyServer `yaml:"upstream"`
-	DisableRemap53  *bool           `yaml:"disableRemap53"`
-	DisableFakePTR  *bool           `yaml:"disableFakePTR"`
-	DisableDropAAAA *bool           `yaml:"disableDropAAAA"`
-	MaxIdleConns    *uint           `yaml:"maxIdleConns"`
-	MaxConcurrent   *uint           `yaml:"maxConcurrent"`
-	Timeout         *uint           `yaml:"timeout"`
+	Host             *DNSProxyServer `yaml:"host"`
+	Upstream         *DNSProxyServer `yaml:"upstream"`
+	FallbackUpstream *DNSProxyServer `yaml:"fallbackUpstream"`
+	DisableRemap53   *bool           `yaml:"disableRemap53"`
+	DisableFakePTR   *bool           `yaml:"disableFakePTR"`
+	DisableDropAAAA  *bool           `yaml:"disableDropAAAA"`
+	MaxIdleConns     *uint           `yaml:"maxIdleConns"`
+	MaxConcurrent    *uint           `yaml:"maxConcurrent"`
+	Timeout          *uint           `yaml:"timeout"`
 }
 
 type DNSProxyServer struct {

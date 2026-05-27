@@ -134,6 +134,18 @@ func (a *App) ImportConfig(cfg config.Config) error {
 					a.config.DNSProxy.Host.Port = *cfg.App.DNSProxy.Host.Port
 				}
 			}
+			if cfg.App.DNSProxy.FallbackUpstream != nil {
+				fb := models.AppConfigDNSProxyServer{}
+				if cfg.App.DNSProxy.FallbackUpstream.Address != nil {
+					fb.Address = *cfg.App.DNSProxy.FallbackUpstream.Address
+				}
+				if cfg.App.DNSProxy.FallbackUpstream.Port != nil {
+					fb.Port = *cfg.App.DNSProxy.FallbackUpstream.Port
+				}
+				if fb.Address != "" && fb.Port != 0 {
+					a.config.DNSProxy.FallbackUpstream = &fb
+				}
+			}
 			if cfg.App.DNSProxy.DisableRemap53 != nil {
 				a.config.DNSProxy.DisableRemap53 = *cfg.App.DNSProxy.DisableRemap53
 			}
@@ -363,6 +375,15 @@ func (a *App) ExportConfig() config.Config {
 					Address: &a.config.DNSProxy.Upstream.Address,
 					Port:    &a.config.DNSProxy.Upstream.Port,
 				},
+				FallbackUpstream: func() *config.DNSProxyServer {
+					if a.config.DNSProxy.FallbackUpstream == nil {
+						return nil
+					}
+					return &config.DNSProxyServer{
+						Address: &a.config.DNSProxy.FallbackUpstream.Address,
+						Port:    &a.config.DNSProxy.FallbackUpstream.Port,
+					}
+				}(),
 				DisableRemap53:  &a.config.DNSProxy.DisableRemap53,
 				DisableFakePTR:  &a.config.DNSProxy.DisableFakePTR,
 				DisableDropAAAA: &a.config.DNSProxy.DisableDropAAAA,

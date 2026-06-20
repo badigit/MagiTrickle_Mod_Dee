@@ -130,7 +130,17 @@ func (r *Records) GetAddresses(domainName string) []*Address {
 			var valid []*Address
 			for _, addr := range addresses {
 				if !now.After(addr.Deadline) {
-					valid = append(valid, addr)
+					// Возвращаем копию, а не указатель из map: AddAddress
+					// мутирует addr.Deadline на месте под write-lock, а
+					// cleanupRecords реслайсит срез. Если отдать наружу живой
+					// указатель, читатель прочитает эти поля уже после RUnlock —
+					// data race (рваное чтение time.Time → мусорный TTL).
+					// Address.Address (net.IP) не мутируется после создания,
+					// поэтому делить нижележащие байты безопасно.
+					valid = append(valid, &Address{
+						Address:  addr.Address,
+						Deadline: addr.Deadline,
+					})
 				}
 			}
 			if len(valid) > 0 {

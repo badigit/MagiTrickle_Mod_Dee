@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -114,6 +115,50 @@ func TestBrokenPipe_PoolReusesDeadConnection(t *testing.T) {
 		}
 	}
 	conn2.Close()
+}
+
+// TestConnPool_ConcurrentCloseNoPanic воспроизводит гонку Close vs Get/Put.
+// До фикса Put мог выполнить `p.pool <- conn` уже после того, как Close сделал
+// close(p.pool) → паника "send on closed channel"; Get мог прочитать zero-value
+// из закрытого канала и вернуть (nil, nil). С сериализацией канальных операций
+// под общим мьютексом ни того, ни другого произойти не может. Запускать с -race.
+func TestConnPool_ConcurrentCloseNoPanic(t *testing.T) {
+	addr, stop := startFakeUpstream(t, time.Second)
+	defer stop()
+
+	pool := newConnPool("tcp", addr, 8)
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("panic in worker (Close/Put race not fixed): %v", r)
+				}
+			}()
+			<-start
+			for j := 0; j < 300; j++ {
+				conn, err := pool.Get(context.Background())
+				if err != nil {
+					return // пул закрыт — корректный путь, не паника
+				}
+				if conn == nil {
+					t.Errorf("Get returned (nil, nil) — closed-channel read leaked through")
+					return
+				}
+				pool.Put(conn)
+			}
+		}()
+	}
+
+	close(start)
+	time.Sleep(2 * time.Millisecond) // дать воркерам войти в горячий цикл
+	pool.Close()                     // закрываем посреди полёта
+	wg.Wait()
 }
 
 func TestNoBrokenPipe_NewConnectionEveryTime(t *testing.T) {

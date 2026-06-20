@@ -132,7 +132,9 @@
 
   function startPolling() {
     stopPolling();
-    pollTimer = setInterval(() => fetchStatus(false), 2000);
+    // Запрашиваем домены вместе со статусом, чтобы список наполнялся в реальном
+    // времени по ходу захвата, а не только после остановки.
+    pollTimer = setInterval(() => fetchStatus(true), 2000);
   }
 
   function stopPolling() {
@@ -317,7 +319,7 @@
               </div>
 
               <div class="domain-list">
-                {#each domains as { domain, count }}
+                {#each domains as { domain, count } (domain)}
                   <label class="domain-row" class:selected={selectedDomains.has(domain)}>
                     <input
                       type="checkbox"

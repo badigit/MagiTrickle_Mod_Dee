@@ -126,7 +126,12 @@ func (a *App) dnsRequestHook(clientAddr net.Addr, reqMsg dns.Msg, network string
 
 // dnsResponseHook обрабатывает ответы DNS
 func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.Msg, network string) (*dns.Msg, error) {
-	defer a.handleMessage(respMsg, clientAddr, network)
+	// Замыкание, а не defer a.handleMessage(respMsg, ...): аргументы defer
+	// вычисляются в момент объявления, поэтому захватили бы снимок respMsg ДО
+	// фильтрации AAAA ниже (dns.Msg — структура, slice-header Answer копируется).
+	// В итоге handleMessage парсил бы нефильтрованный ответ и добавлял AAAA в
+	// nftset даже при активном drop. Замыкание вычисляет respMsg в момент выхода.
+	defer func() { a.handleMessage(respMsg, clientAddr, network) }()
 
 	if a.config.DNSProxy.DisableDropAAAA {
 		return nil, nil

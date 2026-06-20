@@ -94,6 +94,14 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}
 	defer close(linkUpdateDone)
 
+	// Подписка на изменения адресов: интерфейс может получить IP/шлюз позже
+	// поднятия, тогда iface-маршрут пересоздаётся через handleAddr -> AddrChangeHook.
+	addrUpdateChannel, addrUpdateDone, err := subscribeAddrUpdates()
+	if err != nil {
+		return err
+	}
+	defer close(addrUpdateDone)
+
 	newCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	errChan := make(chan error)
@@ -150,6 +158,8 @@ func (a *App) Start(ctx context.Context) (err error) {
 		select {
 		case event := <-linkUpdateChannel:
 			a.handleLink(event)
+		case event := <-addrUpdateChannel:
+			a.handleAddr(event)
 		case err := <-errChan:
 			return err
 		case <-ctx.Done():

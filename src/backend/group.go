@@ -515,3 +515,26 @@ func (g *Group) LinkUpHook(event netlink.LinkUpdate) error {
 
 	return g.ipsetToLink.LinkUpHook(event)
 }
+
+// AddrChangeHook реагирует на появление/смену IP-адреса на интерфейсе группы:
+// пересоздаёт iface-маршрут, если изменился шлюз. Закрывает кейс позднего
+// получения адреса (VPN/PPP/DHCP), когда на момент LinkUpHook шлюз ещё не был
+// известен. Актуально только для interface-режима (в tproxy ipsetToLink == nil).
+func (g *Group) AddrChangeHook(event netlink.AddrUpdate) error {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+
+	if !g.Enabled() {
+		return nil
+	}
+
+	if !g.Group.Enable {
+		return nil
+	}
+
+	if g.ipsetToLink == nil {
+		return nil
+	}
+
+	return g.ipsetToLink.AddrChangeHook(event)
+}

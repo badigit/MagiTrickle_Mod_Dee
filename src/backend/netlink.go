@@ -22,6 +22,15 @@ func subscribeLinkUpdates() (chan netlink.LinkUpdate, chan struct{}, error) {
 	return linkUpdateChannel, done, nil
 }
 
+func subscribeAddrUpdates() (chan netlink.AddrUpdate, chan struct{}, error) {
+	addrUpdateChannel := make(chan netlink.AddrUpdate)
+	done := make(chan struct{})
+	if err := netlink.AddrSubscribe(addrUpdateChannel, done); err != nil {
+		return nil, nil, fmt.Errorf("failed to subscribe to addr updates: %w", err)
+	}
+	return addrUpdateChannel, done, nil
+}
+
 // handleLink обрабатывает события изменения состояния сетевых интерфейсов
 func (a *App) handleLink(event netlink.LinkUpdate) {
 	switch event.Header.Type {
@@ -59,5 +68,44 @@ func (a *App) handleLink(event netlink.LinkUpdate) {
 			Str("interface", event.Link.Attrs().Name).
 			Int("type", int(event.Header.Type)).
 			Msg("interface del")
+	}
+}
+
+// handleAddr обрабатывает события изменения IP-адресов сетевых интерфейсов.
+// Реагирует только на добавление адреса (NewAddr): когда интерфейс получает
+// адрес/шлюз позже момента поднятия (VPN/PPP/DHCP), это позволяет пересоздать
+// iface-маршрут с актуальным шлюзом без перезапуска группы.
+func (a *App) handleAddr(event netlink.AddrUpdate) {
+	if !event.NewAddr {
+		return
+	}
+
+	iface, err := netlink.LinkByIndex(event.LinkIndex)
+	if err != nil {
+		log.Error().Err(err).Int("linkIndex", event.LinkIndex).Msg("failed to get interface for addr update")
+		return
+	}
+
+	ifaceName := iface.Attrs().Name
+	if !slices.Contains(constant.IgnoredInterfaces, ifaceName) {
+		log.Debug().
+			Str("interface", ifaceName).
+			Str("addr", event.LinkAddress.String()).
+			Msg("interface address changed")
+	}
+
+	for _, group := range a.routingGroups() {
+		if group.Group.EffectiveRouteMode() != models.RouteModeInterface {
+			continue
+		}
+		if group.Interface != ifaceName {
+			continue
+		}
+		if err := group.AddrChangeHook(event); err != nil {
+			log.Error().
+				Err(err).
+				Str("group", group.ID.String()).
+				Msg("error while handling interface addr change")
+		}
 	}
 }

@@ -51,8 +51,16 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	}
 
 	/*
-		Direct mode: RETURN in both mangle and nat to bypass all MagiTrickle routing.
-		Must be in nat too, otherwise TPROXY TCP REDIRECT still catches the traffic.
+		Direct mode: ACCEPT in both mangle and nat to bypass all MagiTrickle routing.
+
+		Must be ACCEPT, not RETURN. The chain is Insert'ed at PREROUTING position 1
+		so it runs before every group chain, but it holds a single match-set->target
+		rule. RETURN from a user chain == fall-through: whether the packet matches the
+		ipset or not, it returns to PREROUTING and keeps traversing the remaining group
+		chains, so an IP that also sits in another group's ipset (overlap) still gets
+		TPROXY'd/marked — direct fails to override. ACCEPT terminates traversal of the
+		current table, which actually bypasses the remaining chains. It's needed in nat
+		too, otherwise TPROXY TCP REDIRECT (nat PREROUTING) still catches the traffic.
 		No filter, no ip rule/route needed.
 	*/
 	if r.ifaceName == Direct {
@@ -61,9 +69,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 			return fmt.Errorf("failed to create chain: %w", err)
 		}
 
-		err = ipt.Append("mangle", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "RETURN")
+		err = ipt.Append("mangle", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "ACCEPT")
 		if err != nil {
-			return fmt.Errorf("failed to append RETURN rule: %w", err)
+			return fmt.Errorf("failed to append ACCEPT rule: %w", err)
 		}
 
 		// Insert at the top so direct always takes priority over other groups' chains.
@@ -73,15 +81,15 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 			return fmt.Errorf("failed to insert rule to PREROUTING: %w", err)
 		}
 
-		// Also insert RETURN in nat PREROUTING to prevent TPROXY TCP REDIRECT.
+		// Also ACCEPT in nat PREROUTING to prevent TPROXY TCP REDIRECT.
 		err = ipt.RegisterChainOverride("nat", r.chainName)
 		if err != nil {
 			return fmt.Errorf("failed to create nat chain: %w", err)
 		}
 
-		err = ipt.Append("nat", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "RETURN")
+		err = ipt.Append("nat", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "ACCEPT")
 		if err != nil {
-			return fmt.Errorf("failed to append nat RETURN rule: %w", err)
+			return fmt.Errorf("failed to append nat ACCEPT rule: %w", err)
 		}
 
 		err = ipt.Insert("nat", "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)

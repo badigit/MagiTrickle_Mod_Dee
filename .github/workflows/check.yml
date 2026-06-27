@@ -60,7 +60,7 @@ jobs:
       - name: Backend tests
         working-directory: ./src/backend
         run: |
-          GOOS=linux go test ./...
+          GOOS=linux go test -tags testing ./...
 
   test_frontend:
     name: Frontend testing

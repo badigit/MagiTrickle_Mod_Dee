@@ -10,6 +10,7 @@ export { default as Check } from "lucide-svelte/icons/check";
 export { default as Grip } from "lucide-svelte/icons/grip-vertical";
 export { default as Import } from "lucide-svelte/icons/upload";
 export { default as Export } from "lucide-svelte/icons/download";
+export { default as Download } from "lucide-svelte/icons/download";
 export { default as ClipboardCopy } from "lucide-svelte/icons/clipboard-copy";
 export { default as ClipboardPaste } from "lucide-svelte/icons/clipboard-paste";
 export { default as Locale } from "lucide-svelte/icons/languages";

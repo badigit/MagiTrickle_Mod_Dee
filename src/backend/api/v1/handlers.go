@@ -16,6 +16,7 @@ import (
 	"magitrickle/diagnostics"
 	"magitrickle/models"
 	"magitrickle/utils/intID"
+	"magitrickle/utils/updater"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog/log"
@@ -855,4 +856,39 @@ func (h *Handler) DeleteRule(w http.ResponseWriter, r *http.Request) {
 			log.Error().Err(err).Msg("failed to save config file")
 		}
 	}
+}
+
+// CheckUpdate
+//
+//	@Summary		Проверка обновлений
+//	@Description	Проверяет наличие новых версий форка
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/update/check [get]
+func (h *Handler) CheckUpdate(w http.ResponseWriter, r *http.Request) {
+	newVer, err := updater.CheckForUpdates()
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to check for updates: %v", err))
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, map[string]any{
+		"available_version": newVer,
+	})
+}
+
+// RunUpdate
+//
+//	@Summary		Запуск обновления
+//	@Description	Скачивает и устанавливает обновление
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/update/run [post]
+func (h *Handler) RunUpdate(w http.ResponseWriter, r *http.Request) {
+	if err := updater.RunUpdate(); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to start update: %v", err))
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, map[string]any{"status": "ok"})
 }

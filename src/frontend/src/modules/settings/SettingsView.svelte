@@ -6,7 +6,8 @@
   import { overlay, toast } from "../../utils/events";
   import Button from "../../components/ui/Button.svelte";
   import Switch from "../../components/ui/Switch.svelte";
-  import { RefreshCw } from "../../components/ui/icons";
+  import { RefreshCw, Download } from "../../components/ui/icons";
+  import { updater } from "../../data/updater.svelte";
 
   const RELOAD_DELAY_MS = 8000;
 
@@ -117,6 +118,44 @@
         <RefreshCw size={18} />
         {t("Restart")}
       </Button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <div class="info">
+        <h3>{t("Updates")}</h3>
+        <p class="hint">
+          {t("Check and install fork updates.")}
+          {#if updater.newVersion}
+            <br />
+            <span style="color: var(--green); font-weight: 500;">
+              {t("New version available:")} {updater.newVersion}
+            </span>
+          {/if}
+        </p>
+      </div>
+      <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <Button
+          onclick={() => updater.check()}
+          inactive={updater.checking}
+          variant={updater.newVersion ? "secondary" : "primary"}
+        >
+          <RefreshCw size={18} />
+          {updater.checking ? t("Checking...") : t("Check for Updates")}
+        </Button>
+        
+        {#if updater.newVersion}
+          <Button
+            onclick={() => updater.runUpdate()}
+            inactive={updater.checking}
+            variant="primary"
+          >
+            <Download size={18} />
+            {t("Install Update")}
+          </Button>
+        {/if}
+      </div>
     </div>
   </section>
 </div>

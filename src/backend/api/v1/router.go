@@ -101,6 +101,10 @@ func NewRouter(a app.Main) chi.Router {
 		r.Get("/info", h.GetSystemInfo)
 		r.Get("/enabled", h.GetEnabled)
 		r.Post("/enabled", h.SetEnabled)
+		r.Route("/update", func(r chi.Router) {
+			r.Get("/check", h.CheckUpdate)
+			r.Post("/run", h.RunUpdate)
+		})
 		r.Route("/hooks", func(r chi.Router) {
 			r.Post("/netfilterd", h.NetfilterDHook)
 		})

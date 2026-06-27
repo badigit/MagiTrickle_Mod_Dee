@@ -185,5 +185,16 @@
   "Restarting service...": "Перезапускаем сервис...",
   "Service restart initiated": "Перезапуск инициирован",
   "Uptime": "Аптайм",
-  "since": "с"
+  "since": "с",
+  "Updates": "Обновления",
+  "Check and install fork updates.": "Проверка и установка обновлений форка.",
+  "Check for Updates": "Проверить обновления",
+  "Checking...": "Проверяем...",
+  "Install Update": "Установить обновление",
+  "New version available:": "Доступна новая версия:",
+  "You have the latest version": "Установлена последняя версия",
+  "Failed to check for updates": "Не удалось проверить обновления",
+  "Update started. The service will restart shortly...": "Обновление запущено. Сервис скоро перезапустится...",
+  "Failed to start update": "Не удалось запустить обновление",
+  "New update available": "Доступно обновление"
 }

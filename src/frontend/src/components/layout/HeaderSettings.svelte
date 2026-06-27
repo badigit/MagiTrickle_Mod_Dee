@@ -4,6 +4,8 @@
   import InfoDialog from "../InfoDialog.svelte";
   import Button from "../ui/Button.svelte";
   import Tooltip from "../ui/Tooltip.svelte";
+  import { updater } from "../../data/updater.svelte";
+  import { nav } from "../../data/nav.svelte";
 
   import { Info, Locale, LogOut } from "../ui/icons";
 
@@ -31,6 +33,18 @@
     <Tooltip value={`${t("build")}: ${version}${buildDate ? `\n${buildDate}` : ""}`}>
       <span class="version-text">{version}{#if isDev && buildDate}{" "}({buildDate}){/if}</span>
     </Tooltip>
+    {#if updater.newVersion}
+      <div
+        class="update-badge"
+        role="button"
+        tabindex="0"
+        onclick={() => nav.goto("settings")}
+        onkeydown={(e) => (e.key === "Enter" || e.key === " ") && nav.goto("settings")}
+        title={t("New update available")}
+      >
+        &#8593;
+      </div>
+    {/if}
     {#if isDev}
       <div class="under-construction">dev</div>
     {/if}
@@ -82,6 +96,23 @@
     flex: 0 0 auto;
     margin-left: 0.5rem;
     white-space: nowrap;
+  }
+
+  .update-badge {
+    background: var(--green, #28a745);
+    color: white;
+    font-weight: bold;
+    padding: 2px 6px;
+    border-radius: 4px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    flex: 0 0 auto;
+    margin-left: 0.5rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  .update-badge:hover {
+    transform: scale(1.05);
   }
 
   .container {

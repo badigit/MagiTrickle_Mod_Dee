@@ -1,3 +1,9 @@
+//go:build linux || darwin
+// +build linux darwin
+
+// MagiTrickle ориентирован на Linux/Darwin-роутеры и использует netfilter,
+// unix-сокеты и платформенные системные вызовы. Сборка под Windows не
+// поддерживается и намеренно запрещена этим build-constraint.
 package main
 
 import (

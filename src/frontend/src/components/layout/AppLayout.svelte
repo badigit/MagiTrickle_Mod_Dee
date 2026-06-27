@@ -6,7 +6,7 @@
   import InterfacesView from "../../modules/interfaces/InterfacesView.svelte";
   import SettingsView from "../../modules/settings/SettingsView.svelte";
   import SubscriptionsView from "../../modules/subscriptions/SubscriptionsView.svelte";
-  import { persistedState } from "../../utils/persisted-state.svelte";
+  import { nav } from "../../data/nav.svelte";
   // import LogsPanel from "../../modules/logs/LogsPanel.svelte";
   import Overlay from "../feedback/Overlay.svelte";
   import ScrollToTop from "../feedback/ScrollToTop.svelte";
@@ -16,22 +16,16 @@
 
   import { LayoutList, Menu, Network, RSS, Settings } from "../ui/icons";
 
-  const lastActiveTab = persistedState("active_tab", "groups");
-  let active_tab = $state(lastActiveTab.current);
   let isMenuOpen = $state(false);
   let isRenderCompleteGroups = $state(false);
   let isRenderCompleteSubscriptions = $state(false);
   let isRenderComplete = $derived(
-    active_tab === "groups"
+    nav.tab === "groups"
       ? isRenderCompleteGroups
-      : active_tab === "subscriptions"
+      : nav.tab === "subscriptions"
         ? isRenderCompleteSubscriptions
         : true,
   );
-
-  $effect(() => {
-    lastActiveTab.current = active_tab;
-  });
 
   const toggleMenu = () => (isMenuOpen = !isMenuOpen);
   const closeMenu = () => (isMenuOpen = false);
@@ -45,7 +39,7 @@
 {/if}
 
 <main>
-  <Tabs.Root bind:value={active_tab}>
+  <Tabs.Root bind:value={nav.tab}>
     <nav>
       <div class="nav-left">
         <button
@@ -96,7 +90,7 @@
         <SubscriptionsView onRenderComplete={() => (isRenderCompleteSubscriptions = true)} />
       </Tabs.Content>
       <Tabs.Content value="interfaces">
-        <InterfacesView visible={active_tab === "interfaces"} />
+        <InterfacesView visible={nav.tab === "interfaces"} />
       </Tabs.Content>
       <Tabs.Content value="settings">
         <SettingsView />

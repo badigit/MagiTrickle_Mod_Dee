@@ -15,7 +15,9 @@
 
   let { visible = false }: { visible?: boolean } = $props();
 
-  let interfaceList = $state<{ id: string; alias: string; active?: boolean; ip?: string }[]>([]);
+  let interfaceList = $state<
+    { id: string; alias: string; active?: boolean; ip?: string; outgoing?: boolean }[]
+  >([]);
   let hasChanges = $state(false);
   let fileInput: HTMLInputElement;
 
@@ -96,8 +98,11 @@
     globalLoading = true;
 
     const virtualIds = new Set(["TPROXY", "blackhole", "direct"]);
+    // Only probe interfaces that carry the router's own egress (outgoing).
+    // Incoming/server tunnels (e.g. sstp0 — the router is the SSTP server) have
+    // no outbound route, so the probe always fails — don't run it (mt-8fi).
     const activeInterfaces = interfaceList.filter(
-      (i) => i.active && i.ip && !virtualIds.has(i.id),
+      (i) => i.active && i.ip && i.outgoing && !virtualIds.has(i.id),
     );
     for (const i of activeInterfaces) {
       externalIPs[i.id] = "loading";
@@ -134,6 +139,7 @@
       alias: aliases.all[item.id] ?? "",
       active: item.active,
       ip: item.ip,
+      outgoing: item.outgoing,
     }));
   }
 
@@ -178,6 +184,7 @@
         alias: parsed[item.id] ?? "",
         active: item.active,
         ip: item.ip,
+        outgoing: item.outgoing,
       }));
       hasChanges = true;
       toast.success(t("Config imported"));
@@ -311,6 +318,13 @@
               {:else if externalIPs[item.id]}
                 <div class="interface-external-ip success">
                   🌐 {externalIPs[item.id]}
+                </div>
+              {:else if item.active && item.ip && !item.outgoing && item.id !== "TPROXY" && item.id !== "blackhole" && item.id !== "direct"}
+                <div
+                  class="interface-external-ip local"
+                  title={t("No outbound internet via this interface — external IP not checked")}
+                >
+                  🌐 —
                 </div>
               {/if}
             </div>
@@ -582,7 +596,14 @@
   }
 
   .interface-external-ip.error {
-    color: var(--red, #ef4444);
+    color: var(--text-2);
+    opacity: 0.8;
+    font-size: 0.7rem;
+  }
+
+  .interface-external-ip.local {
+    color: var(--text-2);
+    opacity: 0.7;
     font-size: 0.7rem;
   }
 

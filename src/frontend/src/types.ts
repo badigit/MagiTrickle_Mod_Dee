@@ -88,5 +88,9 @@ export type Interfaces = {
     id: string;
     active?: boolean;
     ip?: string;
+    // True when the interface carries the router's own egress (has a default
+    // route via it). Only these can answer the external-IP probe; incoming/
+    // server tunnels are false and must not be auto-tested.
+    outgoing?: boolean;
   }[];
 };

@@ -75,6 +75,7 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("failed to get interfaces: %w", err).Error())
 		return
 	}
+	outgoing := h.app.OutgoingLinkIndexes()
 	res := make([]types.InterfaceRes, 0, len(interfaces)+3)
 	res = append(res, types.InterfaceRes{ID: models.InterfaceDirect, Active: true})
 	res = append(res, types.InterfaceRes{ID: "blackhole", Active: true})
@@ -88,7 +89,7 @@ func (h *Handler) ListInterfaces(w http.ResponseWriter, r *http.Request) {
 				break
 			}
 		}
-		res = append(res, types.InterfaceRes{ID: iface.Name, Active: active, IP: ip})
+		res = append(res, types.InterfaceRes{ID: iface.Name, Active: active, IP: ip, Outgoing: outgoing[iface.Index]})
 	}
 	// Add redir-tproxy as a virtual interface entry (only if TProxyPort is configured)
 	tproxyPort := h.app.Config().Netfilter.TProxyPort

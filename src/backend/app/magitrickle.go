@@ -41,6 +41,7 @@ type Main interface {
 	AddGroup(groupModel *models.Group) error
 	RemoveGroupByIndex(idx int)
 	ListInterfaces() ([]net.Interface, error)
+	OutgoingLinkIndexes() map[int]bool
 	InterfaceAliases() map[string]string
 	SetInterfaceAliases(aliases map[string]string)
 	DnsOverrider() *netfilterTools.PortRemap

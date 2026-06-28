@@ -23,6 +23,9 @@ import (
 
 	"github.com/IGLOU-EU/go-wildcard/v2"
 	"github.com/rs/zerolog/log"
+	"github.com/vishvananda/netlink"
+	"github.com/vishvananda/netlink/nl"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -41,9 +44,9 @@ type WildcardRule struct {
 
 // App – основная структура ядра приложения
 type App struct {
-	enabled        atomic.Bool // Start вызван
-	routingActive  atomic.Bool // routing+DNSOR подняты (false когда пользователь нажал паузу)
-	startedAt      time.Time
+	enabled       atomic.Bool // Start вызван
+	routingActive atomic.Bool // routing+DNSOR подняты (false когда пользователь нажал паузу)
+	startedAt     time.Time
 
 	config models.AppConfig
 
@@ -289,6 +292,50 @@ func (a *App) ListInterfaces() ([]net.Interface, error) {
 	return filteredInterfaces, nil
 }
 
+// OutgoingLinkIndexes returns the set of interface indexes that carry the
+// router's own egress — i.e. have a default route pointing out through them in
+// any routing table. That is precisely the precondition for the external-IP
+// probe (BindToDevice + HTTP GET) to succeed.
+//
+// It exists to tell incoming/server tunnels apart from outgoing ones: an SSTP
+// server endpoint like sstp0 (the router IS the server, clients dial in) has no
+// default route via it and is excluded, so the UI must not auto-run a doomed
+// external-IP test against it (mt-8fi). Outgoing tunnels (WAN, WG clients) and
+// interface-mode group links do have a default route via them and are included.
+func (a *App) OutgoingLinkIndexes() map[int]bool {
+	out := make(map[int]bool)
+	// Table 0 as the filter means "all tables": interface-mode groups install
+	// their default route in a per-group table, so scanning only main misses them.
+	routes, err := netlink.RouteListFiltered(nl.FAMILY_ALL, &netlink.Route{}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		log.Warn().Err(err).Msg("failed to list routes for outgoing-interface detection")
+		return out
+	}
+	mark := func(linkIndex int) {
+		if linkIndex > 0 {
+			out[linkIndex] = true
+		}
+	}
+	for _, route := range routes {
+		// Only a default route (zero-length destination) grants general egress.
+		if route.Dst != nil {
+			if ones, _ := route.Dst.Mask.Size(); ones != 0 {
+				continue
+			}
+		}
+		// Skip non-unicast defaults (blackhole/unreachable/prohibit) — e.g. the
+		// blackhole default that interface-mode installs as a leak guard.
+		if route.Type != unix.RTN_UNICAST {
+			continue
+		}
+		mark(route.LinkIndex)
+		for _, nh := range route.MultiPath {
+			mark(nh.LinkIndex)
+		}
+	}
+	return out
+}
+
 // DnsOverrider возвращает dnsOverrider
 func (a *App) DnsOverrider() *netfilterTools.PortRemap {
 	return a.dnsOverrider
@@ -400,9 +447,23 @@ func (a *App) SetEnabled(enabled bool) error {
 	return nil
 }
 
-// Restart spawns a detached shell that calls the platform restart command,
-// then exits the current process so the init.d/procd supervisor brings
-// magitrickled back up with fresh configuration.
+// Restart spawns a detached shell that calls the platform restart command
+// (init.d/procd or systemctl), then exits the current process so the
+// supervisor brings magitrickled back up with fresh configuration.
+//
+// Teardown semantics: the restart command (e.g. `init.d ... restart`) stops
+// this service first, which delivers SIGTERM. The normal shutdown path then
+// runs gracefully — Start's deferred bringDownRouting + dnsMITM.Close tear down
+// the iptables rules and the DNS override (see start.go). So in the normal case
+// teardown DOES happen, via the signal, not here.
+//
+// The os.Exit(0) below is therefore NOT the primary exit — it is a watchdog
+// fallback for the degraded case where the restart command fails to terminate
+// us within 3s (signal ignored, shutdown hung). In that path teardown is
+// intentionally skipped: leaving the iptables rules and DNS override in place
+// avoids a routing-leak window, and the freshly started process reconciles any
+// stale state on startup (each group's enable() calls ClearIfDisabled before
+// re-adding its rules). Hence os.Exit(0), not teardown-then-exit.
 func (a *App) Restart() {
 	log.Info().Str("cmd", constant.RestartCommand).Msg("restart requested via API")
 
@@ -414,6 +475,9 @@ func (a *App) Restart() {
 	}
 	go func() { _ = cmd.Wait() }()
 
+	// Watchdog fallback: force-exit if the restart command above did not take us
+	// down via SIGTERM within 3s. Teardown is intentionally skipped here — see
+	// the function doc for why leaving routing in place is the safe choice.
 	go func() {
 		time.Sleep(3 * time.Second)
 		log.Info().Msg("exiting process to let supervisor restart it")

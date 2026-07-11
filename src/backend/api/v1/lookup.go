@@ -26,129 +26,134 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 	// Collect all rule sources: groups + subscriptions
 	type ruleSource = lookupSource
 
-	var sources []ruleSource
-	appGroups := h.app.Groups()
-	for _, g := range appGroups {
-		m := g.Model()
-		if !m.Enable {
-			continue
-		}
-		sources = append(sources, ruleSource{
-			id:     m.ID.String(),
-			name:   m.Name,
-			source: "group",
-			rules:  m.Rules,
-		})
-	}
-	for _, s := range h.app.Subscriptions() {
-		if !s.Enable {
-			continue
-		}
-		sources = append(sources, ruleSource{
-			id:     s.ID.String(),
-			name:   s.Name,
-			source: "subscription",
-			rules:  s.Rules,
-		})
-	}
-
-	// Preload ipset data if requested
-	type ipsetEntry struct {
-		groupID   string
-		groupName string
-		source    string
-		setName   string
-		network   net.IPNet
-	}
-	var ipsetEntries []ipsetEntry
-
-	if req.CheckIpset {
+	// Чтение под RLock: matchRule/итерация читают rule.Rule и *.Rules, которые
+	// API-писатели мутируют in-place (mt-gjg/mt-jfc). WriteJson — вне лока.
+	var results []types.LookupResult
+	h.app.WithConfigRead(func() {
+		var sources []ruleSource
+		appGroups := h.app.Groups()
 		for _, g := range appGroups {
 			m := g.Model()
 			if !m.Enable {
 				continue
 			}
-			gid := m.ID.String()
-
-			if ipv4, err := g.ListIPv4Subnets(); err == nil {
-				for subnet := range ipv4 {
-					cidr := subnet.CIDR
-					if cidr == 0 {
-						cidr = 32
-					}
-					ipsetEntries = append(ipsetEntries, ipsetEntry{
-						groupID:   gid,
-						groupName: m.Name,
-						source:    "group",
-						network: net.IPNet{
-							IP:   net.IP(subnet.Address[:]),
-							Mask: net.CIDRMask(int(cidr), 32),
-						},
-					})
-				}
-			}
-			if ipv6, err := g.ListIPv6Subnets(); err == nil {
-				for subnet := range ipv6 {
-					cidr := subnet.CIDR
-					if cidr == 0 {
-						cidr = 128
-					}
-					ipsetEntries = append(ipsetEntries, ipsetEntry{
-						groupID:   gid,
-						groupName: m.Name,
-						source:    "group",
-						network: net.IPNet{
-							IP:   net.IP(subnet.Address[:]),
-							Mask: net.CIDRMask(int(cidr), 128),
-						},
-					})
-				}
-			}
+			sources = append(sources, ruleSource{
+				id:     m.ID.String(),
+				name:   m.Name,
+				source: "group",
+				rules:  m.Rules,
+			})
 		}
-	}
-
-	results := make([]types.LookupResult, len(req.Queries))
-	for qi, query := range req.Queries {
-		result := types.LookupResult{
-			Query:    query,
-			RuleHits: []types.RuleHit{},
+		for _, s := range h.app.Subscriptions() {
+			if !s.Enable {
+				continue
+			}
+			sources = append(sources, ruleSource{
+				id:     s.ID.String(),
+				name:   s.Name,
+				source: "subscription",
+				rules:  s.Rules,
+			})
 		}
 
-		qLower := strings.ToLower(strings.TrimSpace(query))
-		qIP, qNet := parseIPOrCIDR(qLower)
+		// Preload ipset data if requested
+		type ipsetEntry struct {
+			groupID   string
+			groupName string
+			source    string
+			setName   string
+			network   net.IPNet
+		}
+		var ipsetEntries []ipsetEntry
 
-		// Check rules
-		for _, src := range sources {
-			for _, rule := range src.rules {
-				if !rule.Enable {
+		if req.CheckIpset {
+			for _, g := range appGroups {
+				m := g.Model()
+				if !m.Enable {
 					continue
 				}
-				if hit := matchRule(rule, qLower, qIP, qNet, src); hit != nil {
-					result.RuleHits = append(result.RuleHits, *hit)
-				}
-			}
-		}
+				gid := m.ID.String()
 
-		// Check ipset
-		if req.CheckIpset && qIP != nil {
-			result.IpsetHits = []types.IpsetHit{}
-			seen := make(map[string]bool)
-			for _, entry := range ipsetEntries {
-				if entry.network.Contains(qIP) {
-					if !seen[entry.groupID] {
-						seen[entry.groupID] = true
-						result.IpsetHits = append(result.IpsetHits, types.IpsetHit{
-							GroupID:   entry.groupID,
-							GroupName: entry.groupName,
-							Source:    entry.source,
+				if ipv4, err := g.ListIPv4Subnets(); err == nil {
+					for subnet := range ipv4 {
+						cidr := subnet.CIDR
+						if cidr == 0 {
+							cidr = 32
+						}
+						ipsetEntries = append(ipsetEntries, ipsetEntry{
+							groupID:   gid,
+							groupName: m.Name,
+							source:    "group",
+							network: net.IPNet{
+								IP:   net.IP(subnet.Address[:]),
+								Mask: net.CIDRMask(int(cidr), 32),
+							},
+						})
+					}
+				}
+				if ipv6, err := g.ListIPv6Subnets(); err == nil {
+					for subnet := range ipv6 {
+						cidr := subnet.CIDR
+						if cidr == 0 {
+							cidr = 128
+						}
+						ipsetEntries = append(ipsetEntries, ipsetEntry{
+							groupID:   gid,
+							groupName: m.Name,
+							source:    "group",
+							network: net.IPNet{
+								IP:   net.IP(subnet.Address[:]),
+								Mask: net.CIDRMask(int(cidr), 128),
+							},
 						})
 					}
 				}
 			}
 		}
 
-		results[qi] = result
-	}
+		results = make([]types.LookupResult, len(req.Queries))
+		for qi, query := range req.Queries {
+			result := types.LookupResult{
+				Query:    query,
+				RuleHits: []types.RuleHit{},
+			}
+
+			qLower := strings.ToLower(strings.TrimSpace(query))
+			qIP, qNet := parseIPOrCIDR(qLower)
+
+			// Check rules
+			for _, src := range sources {
+				for _, rule := range src.rules {
+					if !rule.Enable {
+						continue
+					}
+					if hit := matchRule(rule, qLower, qIP, qNet, src); hit != nil {
+						result.RuleHits = append(result.RuleHits, *hit)
+					}
+				}
+			}
+
+			// Check ipset
+			if req.CheckIpset && qIP != nil {
+				result.IpsetHits = []types.IpsetHit{}
+				seen := make(map[string]bool)
+				for _, entry := range ipsetEntries {
+					if entry.network.Contains(qIP) {
+						if !seen[entry.groupID] {
+							seen[entry.groupID] = true
+							result.IpsetHits = append(result.IpsetHits, types.IpsetHit{
+								GroupID:   entry.groupID,
+								GroupName: entry.groupName,
+								Source:    entry.source,
+							})
+						}
+					}
+				}
+			}
+
+			results[qi] = result
+		}
+	})
 
 	utils.WriteJson(w, http.StatusOK, types.LookupRes{Results: results})
 }

@@ -108,48 +108,67 @@ func (a *App) startSubscriptionSyncLoop(ctx context.Context, _ chan error) {
 
 func (a *App) syncDueSubscriptions(ctx context.Context) error {
 	now := time.Now()
-	changed := false
 
+	// Фаза 1: определить due-подписки и зафетчить (сетевой I/O — СТРОГО вне конфиг-лока,
+	// иначе FetchRules заблокирует датапас на всё время HTTP-запроса). Чтение полей
+	// подписки — под RLock (API мутирует их in-place, mt-jfc).
+	type pending struct {
+		sub   *models.Subscription
+		rules []*models.Rule
+	}
+	var pend []pending
 	for _, subscription := range a.Subscriptions() {
-		if !subscription.Enable || subscription.Interval <= 0 || subscription.URL == "" {
+		var due bool
+		var url string
+		a.WithConfigRead(func() {
+			due = subscription.Enable && subscription.Interval > 0 && subscription.URL != "" &&
+				(subscription.LastUpdate == 0 ||
+					now.Sub(time.UnixMilli(subscription.LastUpdate)) >= time.Duration(subscription.Interval)*time.Second)
+			url = subscription.URL
+		})
+		if !due {
 			continue
 		}
-
-		lastUpdate := time.UnixMilli(subscription.LastUpdate)
-		if subscription.LastUpdate > 0 && now.Sub(lastUpdate) < time.Duration(subscription.Interval)*time.Second {
-			continue
-		}
-
-		rules, err := subscriptionutils.FetchRules(ctx, subscription.URL)
+		rules, err := subscriptionutils.FetchRules(ctx, url)
 		if err != nil {
 			log.Error().
 				Err(err).
 				Str("subscriptionId", subscription.ID.String()).
-				Str("url", subscription.URL).
+				Str("url", url).
 				Msg("failed to auto-sync subscription")
 			continue
 		}
-
-		if rulesEquivalent(subscription.Rules, rules) {
-			// Source unchanged — bump in-memory timestamp so we don't refetch
-			// on every ticker, but skip group rebuild and config write to avoid
-			// resetting ipsets and flash wear.
-			subscription.LastUpdate = now.UnixMilli()
-			continue
-		}
-
-		subscription.Rules = rules
-		subscription.LastUpdate = now.UnixMilli()
-		changed = true
+		pend = append(pend, pending{subscription, rules})
 	}
-
-	if !changed {
+	if len(pend) == 0 {
 		return nil
 	}
 
-	if err := a.RebuildSubscriptionGroups(); err != nil {
-		return err
+	// Фаза 2: применить мутации + rebuild под эксклюзивным конфиг-локом (mt-jfc, mt-6q1).
+	changed := false
+	var rebuildErr error
+	a.WithConfigWrite(func() {
+		for _, p := range pend {
+			if rulesEquivalent(p.sub.Rules, p.rules) {
+				// Источник не изменился — bump timestamp, без rebuild/сохранения (ipset/флеш).
+				p.sub.LastUpdate = now.UnixMilli()
+				continue
+			}
+			p.sub.Rules = p.rules
+			p.sub.LastUpdate = now.UnixMilli()
+			changed = true
+		}
+		if changed {
+			rebuildErr = a.RebuildSubscriptionGroups()
+		}
+	})
+	if rebuildErr != nil {
+		return rebuildErr
 	}
+	if !changed {
+		return nil
+	}
+	// SaveConfig — ВНЕ лока (флеш-I/O; SaveConfig берёт RLock сам).
 	if err := a.SaveConfig(); err != nil {
 		return fmt.Errorf("failed to save config after auto-sync: %w", err)
 	}

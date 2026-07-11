@@ -66,6 +66,10 @@ type App struct {
 
 	wildcardRules       []*WildcardRule
 	wildcardRulesLocker sync.RWMutex
+
+	// cfgMu сериализует все мутации конфига (группы/правила/подписки) и
+	// защищает lock-free чтения датапаса. См. app_config_lock.go.
+	cfgMu sync.RWMutex
 }
 
 // New создаёт новый экземпляр App
@@ -145,7 +149,12 @@ func (a *App) RebuildTrie() {
 }
 
 // searchDomain looks up a domain in the trie, then falls back to wildcard and regex rules.
+// Держит cfgMu.RLock: step 3 (regex-fallback) читает g.Rules/rule.Rule, которые
+// API-писатели мутируют in-place под cfgMu.Lock. НЕ вызывать под уже взятым cfgMu.
 func (a *App) searchDomain(domain string) (*Group, bool) {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
+
 	// 1. Trie lookup — O(domain parts)
 	if data, found := a.Trie().Search(domain); found {
 		if g, ok := data.(*Group); ok && g.Enabled() && g.Group.Enable {

@@ -42,7 +42,15 @@ func (a *App) LoadConfig() error {
 }
 
 func (a *App) SaveConfig() error {
-	out, err := yaml.Marshal(a.ExportConfig())
+	// Снимок конфига под RLock (ExportConfig читает g.Rules/подписки, которые
+	// писатели мутируют in-place). Маршал+запись на флеш — ВНЕ лока. ВАЖНО:
+	// НЕ вызывать SaveConfig под уже взятым cfgMu.Lock (RLock → дедлок) —
+	// все писатели зовут SaveConfig после выхода из WithConfigWrite.
+	var cfg config.Config
+	a.WithConfigRead(func() {
+		cfg = a.ExportConfig()
+	})
+	out, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config file: %w", err)
 	}
@@ -86,6 +94,12 @@ func (a *App) SaveInterfaceConfig() error {
 }
 
 func (a *App) ImportConfig(cfg config.Config) error {
+	// ImportConfig вызывается и в рантайме (SIGHUP-релоад, main.go) → мутации групп/
+	// подписок должны идти под эксклюзивным cfgMu (mt-6q1). Не зовёт SaveConfig/
+	// searchDomain → реентранси-дедлока нет.
+	a.cfgMu.Lock()
+	defer a.cfgMu.Unlock()
+
 	if !strings.HasPrefix(cfg.ConfigVersion, "0.1.") {
 		return ErrConfigUnsupportedVersion
 	}

@@ -15,7 +15,11 @@ import (
 )
 
 func (h *Handler) GetSubscriptions(w http.ResponseWriter, r *http.Request) {
-	utils.WriteJson(w, http.StatusOK, RespFromSubscriptions(h.app.Subscriptions()))
+	var resp types.SubscriptionsRes
+	h.app.WithConfigRead(func() {
+		resp = RespFromSubscriptions(h.app.Subscriptions())
+	})
+	utils.WriteJson(w, http.StatusOK, resp)
 }
 
 func (h *Handler) PutSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -29,37 +33,50 @@ func (h *Handler) PutSubscriptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existingByID := make(map[intID.ID]*models.Subscription)
-	for _, subscription := range h.app.Subscriptions() {
-		existingByID[subscription.ID] = subscription
-	}
-
-	newSubscriptions := make([]*models.Subscription, len(*req.Subscriptions))
-	for i, subscriptionReq := range *req.Subscriptions {
-		var existing *models.Subscription
-		if subscriptionReq.ID != nil {
-			existing = existingByID[*subscriptionReq.ID]
+	status, errMsg := 0, ""
+	var buildErr error
+	var resp types.SubscriptionsRes
+	h.app.WithConfigWrite(func() {
+		existingByID := make(map[intID.ID]*models.Subscription)
+		for _, subscription := range h.app.Subscriptions() {
+			existingByID[subscription.ID] = subscription
 		}
-		newSubscriptions[i], err = SubscriptionFromReq(subscriptionReq, existing)
-		if err != nil {
-			utils.WriteError(w, http.StatusBadRequest, err.Error())
+
+		newSubscriptions := make([]*models.Subscription, len(*req.Subscriptions))
+		for i, subscriptionReq := range *req.Subscriptions {
+			var existing *models.Subscription
+			if subscriptionReq.ID != nil {
+				existing = existingByID[*subscriptionReq.ID]
+			}
+			newSubscriptions[i], buildErr = SubscriptionFromReq(subscriptionReq, existing)
+			if buildErr != nil {
+				return
+			}
+		}
+
+		h.app.ClearSubscriptions()
+		for _, subscription := range newSubscriptions {
+			if e := h.app.AddSubscription(subscription); e != nil {
+				status, errMsg = http.StatusInternalServerError, e.Error()
+				return
+			}
+		}
+		if e := h.app.RebuildSubscriptionGroups(); e != nil {
+			status, errMsg = http.StatusInternalServerError, e.Error()
 			return
 		}
+		resp = RespFromSubscriptions(newSubscriptions)
+	})
+	if buildErr != nil {
+		utils.WriteError(w, http.StatusBadRequest, buildErr.Error())
+		return
 	}
-
-	h.app.ClearSubscriptions()
-	for _, subscription := range newSubscriptions {
-		if err := h.app.AddSubscription(subscription); err != nil {
-			utils.WriteError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	}
-	if err := h.app.RebuildSubscriptionGroups(); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+	if status != 0 {
+		utils.WriteError(w, status, errMsg)
 		return
 	}
 
-	utils.WriteJson(w, http.StatusOK, RespFromSubscriptions(newSubscriptions))
+	utils.WriteJson(w, http.StatusOK, resp)
 	if r.URL.Query().Get("save") == "true" {
 		if err := h.app.SaveConfig(); err != nil {
 			log.Error().Err(err).Msg("failed to save config file")
@@ -80,30 +97,58 @@ func (h *Handler) CreateSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.app.AddSubscription(subscription); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if err := h.app.RebuildSubscriptionGroups(); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+	status, errMsg := 0, ""
+	var resp types.SubscriptionRes
+	h.app.WithConfigWrite(func() {
+		if e := h.app.AddSubscription(subscription); e != nil {
+			status, errMsg = http.StatusInternalServerError, e.Error()
+			return
+		}
+		if e := h.app.RebuildSubscriptionGroups(); e != nil {
+			status, errMsg = http.StatusInternalServerError, e.Error()
+			return
+		}
+		resp = RespFromSubscription(subscription)
+	})
+	if status != 0 {
+		utils.WriteError(w, status, errMsg)
 		return
 	}
 
-	utils.WriteJson(w, http.StatusOK, RespFromSubscription(subscription))
+	utils.WriteJson(w, http.StatusOK, resp)
 	if err := h.app.SaveConfig(); err != nil {
 		log.Error().Err(err).Msg("failed to save config file")
 	}
 }
 
 func (h *Handler) DeleteSubscription(w http.ResponseWriter, r *http.Request) {
-	id, idx, _, ok := h.findSubscriptionByQueryID(w, r)
-	if !ok {
+	id, err := intID.ParseID(r.URL.Query().Get("id"))
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid subscription id")
 		return
 	}
-
-	h.app.RemoveSubscriptionByIndex(idx)
-	if err := h.app.RebuildSubscriptionGroups(); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+	status, errMsg := 0, ""
+	h.app.WithConfigWrite(func() {
+		// Резолв индекса по ID внутри лока (mt-q5m/mt-6q1: idx на чужом снимке).
+		idx := -1
+		for i, s := range h.app.Subscriptions() {
+			if s.ID == id {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			status, errMsg = http.StatusNotFound, "subscription not exist"
+			return
+		}
+		h.app.RemoveSubscriptionByIndex(idx)
+		if e := h.app.RebuildSubscriptionGroups(); e != nil {
+			status, errMsg = http.StatusInternalServerError, e.Error()
+			return
+		}
+	})
+	if status != 0 {
+		utils.WriteError(w, status, errMsg)
 		return
 	}
 	log.Info().Str("id", id.String()).Msg("deleted subscription")
@@ -115,28 +160,64 @@ func (h *Handler) DeleteSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) SyncSubscription(w http.ResponseWriter, r *http.Request) {
-	_, _, subscription, ok := h.findSubscriptionByQueryID(w, r)
-	if !ok {
+	id, err := intID.ParseID(r.URL.Query().Get("id"))
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, "invalid subscription id")
+		return
+	}
+	// URL резолвим под RLock, фетч — ВНЕ лока (сетевой I/O не держит датапас).
+	var url string
+	found := false
+	h.app.WithConfigRead(func() {
+		for _, s := range h.app.Subscriptions() {
+			if s.ID == id {
+				url, found = s.URL, true
+				break
+			}
+		}
+	})
+	if !found {
+		utils.WriteError(w, http.StatusNotFound, "subscription not exist")
 		return
 	}
 
-	rules, err := subscriptionutils.FetchRules(r.Context(), subscription.URL)
+	rules, err := subscriptionutils.FetchRules(r.Context(), url)
 	if err != nil {
 		utils.WriteError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 
-	subscription.Rules = rules
-	subscription.LastUpdate = time.Now().UnixMilli()
-	if err := h.app.RebuildSubscriptionGroups(); err != nil {
-		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+	status, errMsg := 0, ""
+	var resp types.SubscriptionSyncRes
+	h.app.WithConfigWrite(func() {
+		var subscription *models.Subscription
+		for _, s := range h.app.Subscriptions() {
+			if s.ID == id {
+				subscription = s
+				break
+			}
+		}
+		if subscription == nil {
+			status, errMsg = http.StatusNotFound, "subscription not exist"
+			return
+		}
+		subscription.Rules = rules
+		subscription.LastUpdate = time.Now().UnixMilli()
+		if e := h.app.RebuildSubscriptionGroups(); e != nil {
+			status, errMsg = http.StatusInternalServerError, e.Error()
+			return
+		}
+		resp = RespFromSubscriptionSync(subscription)
+	})
+	if status != 0 {
+		utils.WriteError(w, status, errMsg)
 		return
 	}
 
 	if err := h.app.SaveConfig(); err != nil {
 		log.Error().Err(err).Msg("failed to save config file")
 	}
-	utils.WriteJson(w, http.StatusOK, RespFromSubscriptionSync(subscription))
+	utils.WriteJson(w, http.StatusOK, resp)
 }
 
 func (h *Handler) PreviewSubscriptionRules(w http.ResponseWriter, r *http.Request) {
@@ -153,21 +234,4 @@ func (h *Handler) PreviewSubscriptionRules(w http.ResponseWriter, r *http.Reques
 	}
 
 	utils.WriteJson(w, http.StatusOK, RespFromRules(rules))
-}
-
-func (h *Handler) findSubscriptionByQueryID(w http.ResponseWriter, r *http.Request) (intID.ID, int, *models.Subscription, bool) {
-	id, err := intID.ParseID(r.URL.Query().Get("id"))
-	if err != nil {
-		utils.WriteError(w, http.StatusBadRequest, "invalid subscription id")
-		return intID.ID{}, -1, nil, false
-	}
-
-	for idx, subscription := range h.app.Subscriptions() {
-		if subscription.ID == id {
-			return id, idx, subscription, true
-		}
-	}
-
-	utils.WriteError(w, http.StatusNotFound, "subscription not exist")
-	return intID.ID{}, -1, nil, false
 }

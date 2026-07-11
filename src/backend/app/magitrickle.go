@@ -7,6 +7,7 @@ import (
 
 	"magitrickle/config"
 	"magitrickle/models"
+	"magitrickle/utils/intID"
 	"magitrickle/utils/netfilterTools"
 
 	"github.com/vishvananda/netlink"
@@ -37,6 +38,13 @@ type DNSCapturer interface {
 type Main interface {
 	Config() models.AppConfig
 	Groups() []Group
+	// WithConfigWrite/WithConfigRead — критические секции конфига (см. app_config_lock.go).
+	// Мутирующие ручки оборачивают резолв+мутацию+снимок в WithConfigWrite; читатели
+	// изменяемого контента правил — в WithConfigRead. ClearGroups/AddGroup/
+	// RemoveGroupByIndex/SyncAllGroups/Rebuild* НЕ лочат сами — вызывать под WithConfigWrite.
+	WithConfigWrite(fn func())
+	WithConfigRead(fn func())
+	GroupByID(id intID.ID) (Group, bool)
 	ClearGroups()
 	AddGroup(groupModel *models.Group) error
 	RemoveGroupByIndex(idx int)

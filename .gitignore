@@ -7,6 +7,12 @@ wget-log
 /research
 *.pcap
 
+# reconnect-debug: вывод (реальный трафик клиента) + личные лаунчеры/конфиги с LAN-IP — НЕ коммитить
+/.tmp/
+tools/**/*.exe
+tools/reconnect-debug/start-watchdog.cmd
+tools/reconnect-debug/watchdog.conf
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db

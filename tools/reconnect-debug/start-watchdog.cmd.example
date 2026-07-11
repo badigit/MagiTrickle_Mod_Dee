@@ -1,0 +1,12 @@
+@echo off
+REM start-watchdog.cmd.example — СКОПИРУЙ в start-watchdog.cmd и впиши свои значения.
+REM start-watchdog.cmd в .gitignore (личный лаунчер с реальным ssh-алиасом/IP), не коммитится.
+title MagiTrickle reconnect-watchdog
+cd /d "<PATH-К-РЕПО>"
+echo Starting reconnect-watchdog (always-on). Closing this window stops it.
+REM -RouterHost: ssh-цель роутера (алиас из ~/.ssh/config или root@<IP>)
+REM -RouterSrc:  IP клиента для фильтра conntrack (пусто = весь трафик)
+pwsh -NoProfile -ExecutionPolicy Bypass -File "tools\reconnect-debug\reconnect-watchdog.ps1" -RouterHost <ROUTER_SSH> -RouterSrc <CLIENT_IP>
+echo.
+echo watchdog stopped.
+pause

@@ -25,17 +25,18 @@ type IPSetToLink struct {
 	enabled atomic.Bool
 	locker  sync.Mutex
 
-	chainName string
-	ifaceName string
-	startIdx  uint32
-	ipset     *IPSet
-	nh        *Helper
-	mark      uint32
-	table     int
-	ip4Rule   *netlink.Rule
-	ip6Rule   *netlink.Rule
-	ip4Route  [2]*netlink.Route
-	ip6Route  [2]*netlink.Route
+	chainName    string
+	ifaceName    string
+	startIdx     uint32
+	ipset        *IPSet
+	nh           *Helper
+	mark         uint32
+	table        int
+	preambleHeld bool
+	ip4Rule      *netlink.Rule
+	ip6Rule      *netlink.Rule
+	ip4Route     [2]*netlink.Route
+	ip6Route     [2]*netlink.Route
 }
 
 func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
@@ -134,9 +135,16 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		return fmt.Errorf("failed to create chain: %w", err)
 	}
 
+	// MARK routes the packet to this group's table; save-mark persists the
+	// decision into conntrack so the shared preamble can restore it on later
+	// packets (see acquireInterfacePreamble). The final ACCEPT terminates mangle
+	// traversal for matched packets, so the FIRST group whose chain matches wins
+	// and later group chains can't overwrite the mark — arbitration consistent
+	// with tproxy (where the nat REDIRECT terminates on the first match too).
 	for _, iptablesArgs := range [][]string{
 		{"-m", "set", "--match-set", ipsetName, "dst", "-j", "MARK", "--set-mark", strconv.Itoa(int(r.mark))},
 		{"-m", "set", "--match-set", ipsetName, "dst", "-j", "CONNMARK", "--save-mark"},
+		{"-m", "set", "--match-set", ipsetName, "dst", "-j", "ACCEPT"},
 	} {
 		err = ipt.Append("mangle", r.chainName, iptablesArgs...)
 		if err != nil {
@@ -534,6 +542,14 @@ func (r *IPSetToLink) enable() error {
 		return nil
 	}
 
+	// Install (ref-counted) the shared preamble before wiring this group's
+	// chain. preambleHeld gates the paired release in disable() so a failed
+	// acquire is never released and a direct-mode teardown never touches it.
+	if err := r.nh.acquireInterfacePreamble(); err != nil {
+		return fmt.Errorf("failed to install routing preamble: %w", err)
+	}
+	r.preambleHeld = true
+
 	var err error
 	idx, err := r.getUnusedMarkAndTable()
 	if err != nil {
@@ -592,6 +608,10 @@ func (r *IPSetToLink) disable() error {
 	errs = append(errs, r.deleteIPRule())
 	errs = append(errs, r.deleteIPTablesRules(r.nh.IPTables4))
 	errs = append(errs, r.deleteIPTablesRules(r.nh.IPTables6))
+	if r.preambleHeld {
+		errs = append(errs, r.nh.releaseInterfacePreamble())
+		r.preambleHeld = false
+	}
 	return errors.Join(errs...)
 }
 

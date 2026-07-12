@@ -150,8 +150,11 @@ func TestInterfacePreambleLifecycle(t *testing.T) {
 	if !fake.ChainExists("mangle", "MT_PREAMBLE") {
 		t.Fatal("MT_PREAMBLE should exist after first acquire")
 	}
+	// --ctdir ORIGINAL: restore-mark только для original-направления. Reply-пакет
+	// с восстановленной маркой уехал бы в ip rule fwmark -> таблицу группы, где
+	// есть только default via групповой iface, — обратно в туннель вместо клиента.
 	wantChain := [][]string{
-		{"-j", "CONNMARK", "--restore-mark"},
+		{"-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "CONNMARK", "--restore-mark"},
 		{"-m", "mark", "!", "--mark", "0x0", "-j", "ACCEPT"},
 	}
 	if got := fake.GetRules("mangle", "MT_PREAMBLE"); !reflect.DeepEqual(got, wantChain) {

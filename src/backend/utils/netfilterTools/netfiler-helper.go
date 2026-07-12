@@ -52,6 +52,10 @@ func (nh *Helper) acquireInterfacePreamble() error {
 	defer nh.preambleMu.Unlock()
 
 	if nh.preambleRefs == 0 {
+		// -m conntrack (--ctdir) needs xt_conntrack; usually loaded by the
+		// firewall already, but load best-effort like the tproxy modules.
+		ensureKernelModule("xt_conntrack")
+
 		var errs []error
 		for _, ipt := range []*iptables.IPTables{nh.IPTables4, nh.IPTables6} {
 			errs = append(errs, nh.installInterfacePreamble(ipt))
@@ -94,7 +98,16 @@ func (nh *Helper) installInterfacePreamble(ipt *iptables.IPTables) error {
 	if err := ipt.RegisterChainOverride("mangle", chain); err != nil {
 		return fmt.Errorf("failed to create preamble chain: %w", err)
 	}
-	if err := ipt.Append("mangle", chain, "-j", "CONNMARK", "--restore-mark"); err != nil {
+	// --ctdir ORIGINAL is CRITICAL: connmark is one value for both directions
+	// of a connection, but the group routing table holds only a default route
+	// via the group iface (no connected routes, unlike e.g. mwan3). Restoring
+	// the mark onto a reply packet (server->client, arriving from the group
+	// iface) would send it into `ip rule fwmark X -> table X -> default via
+	// group iface` — straight back into the tunnel instead of to the LAN
+	// client, killing the connection from the very first reply. Original-only
+	// restore routes client->server packets via the group iface while replies
+	// keep the pre-fix behaviour: unmarked, main table, connected route to LAN.
+	if err := ipt.Append("mangle", chain, "-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "CONNMARK", "--restore-mark"); err != nil {
 		return fmt.Errorf("failed to append restore-mark: %w", err)
 	}
 	if err := ipt.Append("mangle", chain, "-m", "mark", "!", "--mark", "0x0", "-j", "ACCEPT"); err != nil {

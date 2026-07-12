@@ -198,27 +198,27 @@ func TestInterfacePreambleLifecycle(t *testing.T) {
 	}
 }
 
-// TestInterfacePreambleOrderedBeforeGroupJump verifies the preamble jump is
-// inserted before an already-appended group jump, so restore-mark/ACCEPT run
-// ahead of the group chains regardless of install order.
+// TestInterfacePreambleOrderedBeforeGroupJump verifies the enable() lifecycle
+// ordering: acquire (preamble append) runs before the group appends its own
+// jump, so restore-mark/ACCEPT run ahead of the group chains.
 func TestInterfacePreambleOrderedBeforeGroupJump(t *testing.T) {
 	fake := iptables.NewFakeIPTables(iptables.ProtocolIPv4)
 	ipt := iptables.NewIPTables(fake)
 	fake.SetInitialRules("mangle", "PREROUTING", nil)
 	ipt.RegisterChainPatch("mangle", "PREROUTING")
 
-	// A group jump is appended first...
+	// enable() acquires the preamble first...
+	nh := &Helper{ChainPrefix: "MT_", IPTables4: ipt}
+	if err := nh.acquireInterfacePreamble(); err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+
+	// ...then the group appends its jump.
 	if err := ipt.Append("mangle", "PREROUTING", "!", "-i", "lo", "-j", "MT_GRP"); err != nil {
 		t.Fatalf("append group jump failed: %v", err)
 	}
 	if err := ipt.Commit(); err != nil {
 		t.Fatalf("commit group jump failed: %v", err)
-	}
-
-	// ...then the preamble is installed.
-	nh := &Helper{ChainPrefix: "MT_", IPTables4: ipt}
-	if err := nh.acquireInterfacePreamble(); err != nil {
-		t.Fatalf("acquire failed: %v", err)
 	}
 
 	got := fake.GetRules("mangle", "PREROUTING")
@@ -228,6 +228,35 @@ func TestInterfacePreambleOrderedBeforeGroupJump(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("PREROUTING order mismatch — preamble must precede group jump.\nWant: %v\nGot:  %v", want, got)
+	}
+}
+
+// TestDirectStaysAboveInterfacePreamble pins the arbitration between direct
+// mode and the preamble: direct chains Insert@1 while the preamble jump is
+// appended, so direct always runs first. Adding an IP to a direct group must
+// divert even an established, connmark'ed connection — a preamble above direct
+// would restore the mark and ACCEPT before direct could bypass it.
+func TestDirectStaysAboveInterfacePreamble(t *testing.T) {
+	r, fake, ipt := newDirectTestFixture(iptables.ProtocolIPv4)
+
+	// Preamble installed first (an interface group came up earlier)...
+	nh := &Helper{ChainPrefix: "MT_", IPTables4: ipt}
+	if err := nh.acquireInterfacePreamble(); err != nil {
+		t.Fatalf("acquire failed: %v", err)
+	}
+
+	// ...then the direct group inserts its jump at position 1.
+	if err := r.insertIPTablesRules(ipt); err != nil {
+		t.Fatalf("insertIPTablesRules failed: %v", err)
+	}
+
+	got := fake.GetRules("mangle", "PREROUTING")
+	want := [][]string{
+		{"!", "-i", "lo", "-j", "MT_DIRECT"},
+		{"!", "-i", "lo", "-j", "MT_PREAMBLE"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mangle/PREROUTING order mismatch — direct must precede preamble.\nWant: %v\nGot:  %v", want, got)
 	}
 }
 

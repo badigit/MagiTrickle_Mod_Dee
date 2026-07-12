@@ -100,11 +100,15 @@ func (nh *Helper) installInterfacePreamble(ipt *iptables.IPTables) error {
 	if err := ipt.Append("mangle", chain, "-m", "mark", "!", "--mark", "0x0", "-j", "ACCEPT"); err != nil {
 		return fmt.Errorf("failed to append mark-accept: %w", err)
 	}
-	// Insert at position 1 so the preamble runs before every group jump (group
-	// jumps are appended). Exclude loopback, matching the group jumps, so
-	// router-local traffic never enters routing.
-	if err := ipt.Insert("mangle", "PREROUTING", 1, "!", "-i", "lo", "-j", chain); err != nil {
-		return fmt.Errorf("failed to insert preamble jump: %w", err)
+	// Append, don't Insert@1: direct-mode chains Insert@1 and MUST stay above
+	// the preamble (direct's contract is to override everything — adding an IP
+	// to a direct group must divert even an established, connmark'ed
+	// connection). Insert@1 here would race with direct for the top slot and
+	// the winner would depend on group enable order. Appending is still ahead
+	// of every interface-group jump because acquire runs in enable() before the
+	// group appends its own jump. Exclude loopback, matching the group jumps.
+	if err := ipt.Append("mangle", "PREROUTING", "!", "-i", "lo", "-j", chain); err != nil {
+		return fmt.Errorf("failed to append preamble jump: %w", err)
 	}
 	if err := ipt.Commit(); err != nil {
 		return fmt.Errorf("failed to commit preamble: %w", err)

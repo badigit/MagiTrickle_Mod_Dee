@@ -104,13 +104,16 @@ func CheckForUpdates() (string, error) {
 	return "", nil
 }
 
-// compareVersions сравнивает две версии вида "vX.Y.Z" / "X.Y.Z".
-// Возвращает >0 если a новее b, <0 если старше, 0 если равны по числовым компонентам.
-// Сравнение чисто числовое по компонентам — pre-release суффиксы игнорируются,
-// чего достаточно для задачи "не предлагать откат на более старый релиз".
+// compareVersions сравнивает две версии вида "X.Y.Z-badigit.N", опционально с
+// dev-суффиксом "~git...". Возвращает >0 если a новее b, <0 если старше, 0 если
+// равны. Сначала сравниваются числовые компоненты; при их равенстве версия С
+// pre-release-суффиксом ("~...") считается СТАРШЕ чистого тега того же номера
+// (semver-семантика: 0.5.2-badigit.15~git... < 0.5.2-badigit.15). Это позволяет
+// апдейтеру предложить чистый релиз .15 dev-сборке .15~git, но не «откатывать»
+// одинаковые чистые версии.
 func compareVersions(a, b string) int {
-	pa := parseVersion(a)
-	pb := parseVersion(b)
+	pa, preA := parseVersion(a)
+	pb, preB := parseVersion(b)
 	n := len(pa)
 	if len(pb) > n {
 		n = len(pb)
@@ -130,13 +133,26 @@ func compareVersions(a, b string) int {
 			return -1
 		}
 	}
-	return 0
+	// Числа равны: pre-release ниже чистого релиза того же номера.
+	if preA == preB {
+		return 0
+	}
+	if preA {
+		return -1 // a — dev-сборка, b — чистый релиз
+	}
+	return 1
 }
 
-// parseVersion разбивает версию на числовые компоненты. Любой нечисловой
-// хвост компонента (например "3-rc1") обрезается до числа.
-func parseVersion(v string) []int {
+// parseVersion разбивает версию на числовые компоненты и признак pre-release.
+// Всё после первого "~" (opkg-конвенция dev-сборок, например "~git2026...hash")
+// отсекается и помечает версию как pre-release. Оставшаяся часть режется по ".",
+// из каждого компонента берутся ведущие цифры ("2-badigit" -> 2, "15" -> 15).
+func parseVersion(v string) (nums []int, preRelease bool) {
 	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexByte(v, '~'); i >= 0 {
+		v = v[:i]
+		preRelease = true
+	}
 	parts := strings.Split(v, ".")
 	out := make([]int, 0, len(parts))
 	for _, p := range parts {
@@ -150,7 +166,7 @@ func parseVersion(v string) []int {
 		n, _ := strconv.Atoi(num.String())
 		out = append(out, n)
 	}
-	return out
+	return out, preRelease
 }
 
 // downloadFile синхронно скачивает url в dest, перебирая доступные загрузчики

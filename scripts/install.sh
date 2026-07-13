@@ -16,15 +16,18 @@ TMP_DIR="/tmp"
 echo "=== MagiTrickle (badigit) installer ==="
 
 # --- Download helper (wget / curl / uclient-fetch) ---
+# Таймауты обязательны: на роутерах с фильтрацией GitHub-хостов (raw.* /
+# release-assets.*) загрузчик без них висит вечно, а вместе с ним — весь
+# процесс обновления (magitrickle_update.log при этом остаётся пустым).
 
 download() {
   local url="$1" dest="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -Lf --retry 3 --retry-delay 2 -o "$dest" "$url"
+    curl -Lf --retry 3 --retry-delay 2 --connect-timeout 10 -m 300 -o "$dest" "$url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$dest" "$url"
+    wget -T 300 -qO "$dest" "$url"
   elif command -v uclient-fetch >/dev/null 2>&1; then
-    uclient-fetch -qO "$dest" "$url"
+    uclient-fetch -T 300 -qO "$dest" "$url"
   else
     echo "Error: no download tool found (curl, wget, uclient-fetch)" >&2
     exit 1
@@ -34,11 +37,11 @@ download() {
 download_stdout() {
   local url="$1"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url"
+    curl -fsSL --connect-timeout 10 -m 60 "$url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO- "$url"
+    wget -T 60 -qO- "$url"
   elif command -v uclient-fetch >/dev/null 2>&1; then
-    uclient-fetch -qO- "$url"
+    uclient-fetch -T 60 -qO- "$url"
   else
     echo "Error: no download tool found (curl, wget, uclient-fetch)" >&2
     exit 1

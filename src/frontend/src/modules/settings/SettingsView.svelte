@@ -127,10 +127,23 @@
         <h3>{t("Updates")}</h3>
         <p class="hint">
           {t("Check and install fork updates.")}
-          {#if updater.newVersion}
+          {#if updater.newVersion && !updater.updating}
             <br />
             <span style="color: var(--green); font-weight: 500;">
               {t("New version available:")} {updater.newVersion}
+            </span>
+          {/if}
+          {#if updater.updating}
+            <br />
+            <span class="update-progress">
+              <span class="update-spinner"><RefreshCw size={14} /></span>
+              {updater.phaseLabel()}
+            </span>
+          {/if}
+          {#if updater.phase === "failed" && updater.updateError}
+            <br />
+            <span style="color: var(--red, #e5484d); font-weight: 500;">
+              {t("Update failed")}: {updater.updateError}
             </span>
           {/if}
         </p>
@@ -138,21 +151,26 @@
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <Button
           onclick={() => updater.check()}
-          inactive={updater.checking}
+          inactive={updater.checking || updater.updating}
           variant={updater.newVersion ? "secondary" : "primary"}
         >
           <RefreshCw size={18} />
           {updater.checking ? t("Checking...") : t("Check for Updates")}
         </Button>
-        
+
         {#if updater.newVersion}
           <Button
             onclick={() => updater.runUpdate()}
-            inactive={updater.checking}
+            inactive={updater.updating}
             variant="primary"
           >
-            <Download size={18} />
-            {t("Install Update")}
+            {#if updater.updating}
+              <span class="update-spinner"><RefreshCw size={18} /></span>
+              {updater.phaseLabel()}
+            {:else}
+              <Download size={18} />
+              {updater.phase === "failed" ? t("Retry Update") : t("Install Update")}
+            {/if}
           </Button>
         {/if}
       </div>
@@ -230,6 +248,28 @@
   .uptime-since {
     color: var(--text-3, var(--text-2));
     font-size: 0.8rem;
+  }
+
+  .update-progress {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--accent, var(--green));
+    font-weight: 500;
+  }
+
+  .update-spinner {
+    display: inline-flex;
+    animation: update-spin 1s linear infinite;
+  }
+
+  @keyframes update-spin {
+    from {
+      transform: rotate(0deg);
+    }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   @media (max-width: 540px) {

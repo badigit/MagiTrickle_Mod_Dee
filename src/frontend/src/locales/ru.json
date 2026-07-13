@@ -197,5 +197,13 @@
   "Failed to check for updates": "Не удалось проверить обновления",
   "Update started. The service will restart shortly...": "Обновление запущено. Сервис скоро перезапустится...",
   "Failed to start update": "Не удалось запустить обновление",
-  "New update available": "Доступно обновление"
+  "New update available": "Доступно обновление",
+  "Starting update...": "Запускаем обновление...",
+  "Downloading update...": "Скачиваем обновление...",
+  "Installing update...": "Устанавливаем обновление...",
+  "Restarting service...": "Перезапускаем сервис...",
+  "Update installed. Reloading...": "Обновление установлено. Перезагружаем страницу...",
+  "Service did not come back after update": "Сервис не вернулся после обновления",
+  "Update failed": "Обновление не удалось",
+  "Retry Update": "Повторить обновление"
 }

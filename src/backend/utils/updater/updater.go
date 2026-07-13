@@ -6,6 +6,7 @@ package updater
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,19 +28,59 @@ const (
 	forkBranch = "mod_badigit"
 
 	latestReleaseURL = "https://api.github.com/repos/" + forkRepo + "/releases/latest"
-	installScriptURL = "https://raw.githubusercontent.com/" + forkRepo + "/" + forkBranch + "/scripts/install.sh"
+	// install.sh тянем через api.github.com (contents API, raw media type), а не
+	// raw.githubusercontent.com: у части провайдеров raw.* заблокирован, при том
+	// что api.github.com доступен — с него же работает и проверка обновлений.
+	installScriptURL = "https://api.github.com/repos/" + forkRepo + "/contents/scripts/install.sh?ref=" + forkBranch
 
 	updateScriptPath = "/tmp/magitrickle_update.sh"
 	updateLogPath    = "/tmp/magitrickle_update.log"
+
+	// installTimeout ограничивает весь фоновый прогон install.sh (скачивание
+	// ipk + opkg install). По истечении процесс-группа убивается и статус
+	// становится failed — обновление не должно висеть вечно.
+	installTimeout = 10 * time.Minute
 )
 
 type githubRelease struct {
 	TagName string `json:"tag_name"`
 }
 
-// updateMu защищает от параллельного запуска нескольких обновлений.
+// Состояния обновления для UI. Терминальный success фронт не увидит от этого
+// процесса: успешная установка перезапускает демона, и новый процесс стартует
+// с state=idle — фронт трактует «демон вернулся с новой версией» как успех.
+const (
+	StateIdle    = "idle"
+	StateRunning = "running"
+	StateFailed  = "failed"
+
+	StepDownloadingScript = "downloading_script"
+	StepInstalling        = "installing"
+)
+
+// Status — снимок состояния обновления для GET /system/update/status.
+type Status struct {
+	State string `json:"state"`
+	Step  string `json:"step,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// updateMu защищает статус и от параллельного запуска нескольких обновлений.
 var updateMu sync.Mutex
-var updateRunning bool
+var updateStatus = Status{State: StateIdle}
+
+func setStatus(s Status) {
+	updateMu.Lock()
+	updateStatus = s
+	updateMu.Unlock()
+}
+
+// GetStatus возвращает текущий снимок состояния обновления.
+func GetStatus() Status {
+	updateMu.Lock()
+	defer updateMu.Unlock()
+	return updateStatus
+}
 
 // currentVersion определяет текущую установленную версию: из constant.Version,
 // заданной при сборке, либо через opkg как fallback.
@@ -169,81 +210,123 @@ func parseVersion(v string) (nums []int, preRelease bool) {
 	return out, preRelease
 }
 
-// downloadFile синхронно скачивает url в dest, перебирая доступные загрузчики
-// (curl → wget → uclient-fetch), как это делает install.sh. Возвращает ошибку,
-// если ни один загрузчик не найден или скачивание провалилось.
-func downloadFile(url, dest string) error {
-	var cmd *exec.Cmd
-	switch {
-	case lookPath("curl"):
-		cmd = exec.Command("curl", "-Lf", "--retry", "3", "--retry-delay", "2", "-o", dest, url)
-	case lookPath("wget"):
-		cmd = exec.Command("wget", "-qO", dest, url)
-	case lookPath("uclient-fetch"):
-		cmd = exec.Command("uclient-fetch", "-qO", dest, url)
-	default:
-		return fmt.Errorf("no download tool found (curl, wget, uclient-fetch)")
-	}
-
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("download failed: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-
-	fi, err := os.Stat(dest)
+// downloadScript скачивает install.sh Go-клиентом с жёстким таймаутом.
+// Раньше здесь был exec curl без таймаута: на роутерах с фильтрацией GitHub
+// он висел бесконечно, а вместе с ним — HTTP-запрос кнопки «Обновить».
+func downloadScript(url, dest string) error {
+	client := http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("downloaded script missing: %w", err)
+		return fmt.Errorf("failed to build request: %w", err)
 	}
-	if fi.Size() == 0 {
+	req.Header.Set("User-Agent", "magitrickle-updater")
+	// contents API с этим media type отдаёт сырое содержимое файла.
+	req.Header.Set("Accept", "application/vnd.github.raw")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("github api returned status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("failed to read script body: %w", err)
+	}
+	if len(body) == 0 {
 		return fmt.Errorf("downloaded script is empty")
+	}
+	if err := os.WriteFile(dest, body, 0755); err != nil {
+		return fmt.Errorf("failed to write script: %w", err)
 	}
 	return nil
 }
 
-func lookPath(bin string) bool {
-	_, err := exec.LookPath(bin)
-	return err == nil
+// tailFile возвращает последние n байт файла (для короткой диагностики в статусе).
+func tailFile(path string, n int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	if fi.Size() > n {
+		_, _ = f.Seek(-n, io.SeekEnd)
+	}
+	data, _ := io.ReadAll(f)
+	return strings.TrimSpace(string(data))
 }
 
-// RunUpdate скачивает install-скрипт синхронно (чтобы вернуть реальную ошибку
-// при проблемах сети/отсутствии загрузчика), а затем запускает его в фоне.
-// Вывод установки пишется в updateLogPath для пост-фактум диагностики.
+// RunUpdate стартует обновление асинхронно и сразу возвращает управление —
+// прогресс отдаётся через GetStatus (GET /system/update/status). Скачивание
+// install.sh и его выполнение идут в фоне с таймаутами; успешная установка
+// перезапускает демона (статус нового процесса — idle, фронт сверяет версию),
+// провал переводит статус в failed с хвостом лога установки.
 func RunUpdate() error {
 	updateMu.Lock()
-	if updateRunning {
+	if updateStatus.State == StateRunning {
 		updateMu.Unlock()
 		return fmt.Errorf("update already in progress")
 	}
-	updateRunning = true
+	updateStatus = Status{State: StateRunning, Step: StepDownloadingScript}
 	updateMu.Unlock()
 
-	// Если что-то пошло не так до старта фонового процесса — снимаем флаг,
-	// чтобы пользователь мог повторить попытку.
-	started := false
-	defer func() {
-		if !started {
-			updateMu.Lock()
-			updateRunning = false
-			updateMu.Unlock()
+	go func() {
+		log.Info().Msg("Downloading update script...")
+		if err := downloadScript(installScriptURL, updateScriptPath); err != nil {
+			log.Error().Err(err).Msg("update: script download failed")
+			setStatus(Status{State: StateFailed, Step: StepDownloadingScript, Error: err.Error()})
+			return
+		}
+
+		log.Info().Msg("Starting update install process...")
+		setStatus(Status{State: StateRunning, Step: StepInstalling})
+
+		// Отдельная сессия: install.sh перезапускает демона и должен пережить
+		// его остановку. Вывод — в лог-файл для диагностики.
+		runScript := fmt.Sprintf(`sh %s > %s 2>&1; rm -f %s`, updateScriptPath, updateLogPath, updateScriptPath)
+		cmd := exec.Command("sh", "-c", runScript)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := cmd.Start(); err != nil {
+			setStatus(Status{State: StateFailed, Step: StepInstalling, Error: err.Error()})
+			return
+		}
+
+		// Ждём завершения с таймаутом. Успех обычно означает, что этот процесс
+		// демона будет убит рестартом раньше, чем Wait вернётся, — до кода ниже
+		// дело доходит в основном на провале установки.
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err != nil {
+				logTail := tailFile(updateLogPath, 2048)
+				log.Error().Err(err).Str("log_tail", logTail).Msg("update: install script failed")
+				setStatus(Status{State: StateFailed, Step: StepInstalling, Error: logTail})
+				return
+			}
+			// Скрипт завершился успешно, а демон всё ещё жив — считаем idle:
+			// либо установка не потребовала рестарта, либо рестарт вот-вот придёт.
+			setStatus(Status{State: StateIdle})
+		case <-time.After(installTimeout):
+			// Убиваем всю процесс-группу (setsid: pgid == pid ребёнка).
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			logTail := tailFile(updateLogPath, 2048)
+			log.Error().Str("log_tail", logTail).Msg("update: install timed out")
+			setStatus(Status{
+				State: StateFailed,
+				Step:  StepInstalling,
+				Error: "install timed out after " + installTimeout.String() + "; log: " + logTail,
+			})
 		}
 	}()
 
-	log.Info().Msg("Downloading update script...")
-	if err := downloadFile(installScriptURL, updateScriptPath); err != nil {
-		return fmt.Errorf("failed to download update script: %w", err)
-	}
-
-	log.Info().Msg("Starting background update process...")
-	// Скрипт уже скачан и проверен; выполняем его в отдельной сессии, чтобы он
-	// пережил перезапуск демона. Вывод — в лог-файл, не в /dev/null.
-	runScript := fmt.Sprintf(`(sh %s > %s 2>&1; rm -f %s) &`, updateScriptPath, updateLogPath, updateScriptPath)
-	cmd := exec.Command("sh", "-c", runScript)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start background update: %w", err)
-	}
-	started = true
-
-	log.Info().Str("log", updateLogPath).Msg("Background update started successfully")
+	log.Info().Str("log", updateLogPath).Msg("Update started in background")
 	return nil
 }

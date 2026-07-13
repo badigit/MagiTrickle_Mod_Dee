@@ -1107,3 +1107,15 @@ func (h *Handler) RunUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	utils.WriteJson(w, http.StatusOK, map[string]any{"status": "ok"})
 }
+
+// UpdateStatus
+//
+//	@Summary		Статус обновления
+//	@Description	Текущее состояние фонового обновления (idle/running/failed)
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/update/status [get]
+func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, updater.GetStatus())
+}

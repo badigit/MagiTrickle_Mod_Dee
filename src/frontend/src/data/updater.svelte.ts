@@ -33,9 +33,24 @@ class UpdaterStore {
     checking = $state(false);
     phase = $state<UpdatePhase>("idle");
     updateError = $state("");
+    log = $state("");
+    logLoading = $state(false);
 
     get updating(): boolean {
         return this.phase !== "idle" && this.phase !== "failed";
+    }
+
+    // Подтягивает хвост лога обновления для диагностики (кнопка «Показать лог»).
+    async loadLog() {
+        this.logLoading = true;
+        try {
+            const res = await fetcher.get<{ log: string }>("/system/update/log");
+            this.log = res?.log || t("Log is empty");
+        } catch (e) {
+            this.log = `${t("Failed to load log")}: ${e}`;
+        } finally {
+            this.logLoading = false;
+        }
     }
 
     phaseLabel(): string {

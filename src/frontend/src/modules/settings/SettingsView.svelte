@@ -145,8 +145,19 @@
             <span style="color: var(--red, #e5484d); font-weight: 500;">
               {t("Update failed")}: {updater.updateError}
             </span>
+            <br />
+            <button
+              class="log-toggle"
+              onclick={() => updater.loadLog()}
+              disabled={updater.logLoading}
+            >
+              {updater.logLoading ? t("Loading...") : t("Show log")}
+            </button>
           {/if}
         </p>
+        {#if updater.phase === "failed" && updater.log}
+          <pre class="update-log">{updater.log}</pre>
+        {/if}
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <Button
@@ -261,6 +272,35 @@
   .update-spinner {
     display: inline-flex;
     animation: update-spin 1s linear infinite;
+  }
+
+  .log-toggle {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent, var(--green));
+    font-size: 0.8rem;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .log-toggle:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+
+  .update-log {
+    margin-top: 0.6rem;
+    padding: 0.6rem 0.8rem;
+    background: var(--bg-2, rgba(0, 0, 0, 0.25));
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    max-height: 220px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   @keyframes update-spin {

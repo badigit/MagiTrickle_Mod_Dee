@@ -1119,3 +1119,15 @@ func (h *Handler) RunUpdate(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJson(w, http.StatusOK, updater.GetStatus())
 }
+
+// UpdateLog
+//
+//	@Summary		Лог обновления
+//	@Description	Хвост лога последнего обновления (для диагностики)
+//	@Tags			system
+//	@Produce		json
+//	@Success		200
+//	@Router			/api/v1/system/update/log [get]
+func (h *Handler) UpdateLog(w http.ResponseWriter, r *http.Request) {
+	utils.WriteJson(w, http.StatusOK, map[string]any{"log": updater.GetLog()})
+}

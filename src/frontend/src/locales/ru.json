@@ -205,5 +205,9 @@
   "Update installed. Reloading...": "Обновление установлено. Перезагружаем страницу...",
   "Service did not come back after update": "Сервис не вернулся после обновления",
   "Update failed": "Обновление не удалось",
-  "Retry Update": "Повторить обновление"
+  "Retry Update": "Повторить обновление",
+  "Show log": "Показать лог",
+  "Loading...": "Загрузка...",
+  "Log is empty": "Лог пуст",
+  "Failed to load log": "Не удалось загрузить лог"
 }

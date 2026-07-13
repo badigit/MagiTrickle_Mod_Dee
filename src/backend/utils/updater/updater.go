@@ -28,10 +28,12 @@ const (
 	forkBranch = "mod_badigit"
 
 	latestReleaseURL = "https://api.github.com/repos/" + forkRepo + "/releases/latest"
-	// install.sh тянем через api.github.com (contents API, raw media type), а не
-	// raw.githubusercontent.com: у части провайдеров raw.* заблокирован, при том
-	// что api.github.com доступен — с него же работает и проверка обновлений.
-	installScriptURL = "https://api.github.com/repos/" + forkRepo + "/contents/scripts/install.sh?ref=" + forkBranch
+	// install.sh тянем сначала через api.github.com (contents API, raw media
+	// type) — тот же хост, что и проверка версии, — а при сбое падаем на
+	// raw.githubusercontent.com. Оба у типового VPN-роутера идут через github-
+	// группу; два независимых хоста повышают шанс пережить транзиент.
+	installScriptURLAPI = "https://api.github.com/repos/" + forkRepo + "/contents/scripts/install.sh?ref=" + forkBranch
+	installScriptURLRaw = "https://raw.githubusercontent.com/" + forkRepo + "/" + forkBranch + "/scripts/install.sh"
 
 	updateScriptPath = "/tmp/magitrickle_update.sh"
 	updateLogPath    = "/tmp/magitrickle_update.log"
@@ -40,6 +42,10 @@ const (
 	// ipk + opkg install). По истечении процесс-группа убивается и статус
 	// становится failed — обновление не должно висеть вечно.
 	installTimeout = 10 * time.Minute
+
+	// downloadAttempts — попыток на каждый URL при транзиентных ошибках
+	// (сеть / 5xx: GitHub периодически отдаёт 502 через VPN-путь).
+	downloadAttempts = 3
 )
 
 type githubRelease struct {
@@ -80,6 +86,27 @@ func GetStatus() Status {
 	updateMu.Lock()
 	defer updateMu.Unlock()
 	return updateStatus
+}
+
+// ulog дописывает строку с меткой времени в лог обновления. Это единственный
+// доступный на проде след: демон обычно логирует в /dev/null (init.d), поэтому
+// зеркалим ключевые шаги в файл, который читается через GET /update/log и
+// хвост которого кладётся в error при провале.
+func ulog(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	log.Info().Str("component", "updater").Msg(line)
+	f, err := os.OpenFile(updateLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	ts := time.Now().Format("15:04:05")
+	_, _ = fmt.Fprintf(f, "[%s] %s\n", ts, line)
+}
+
+// GetLog возвращает хвост лога обновления для GET /update/log.
+func GetLog() string {
+	return tailFile(updateLogPath, 8192)
 }
 
 // currentVersion определяет текущую установленную версию: из constant.Version,
@@ -210,39 +237,74 @@ func parseVersion(v string) (nums []int, preRelease bool) {
 	return out, preRelease
 }
 
-// downloadScript скачивает install.sh Go-клиентом с жёстким таймаутом.
-// Раньше здесь был exec curl без таймаута: на роутерах с фильтрацией GitHub
-// он висел бесконечно, а вместе с ним — HTTP-запрос кнопки «Обновить».
-func downloadScript(url, dest string) error {
+// httpGetBody делает GET с таймаутом и возвращает тело, признак «стоит
+// повторить» (сеть/5xx) и ошибку. 4xx считаются постоянными (нет смысла
+// повторять тот же URL), сеть и 5xx — транзиентными.
+func httpGetBody(url, accept string) (body []byte, retryable bool, err error) {
 	client := http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return fmt.Errorf("failed to build request: %w", err)
+		return nil, false, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("User-Agent", "magitrickle-updater")
-	// contents API с этим media type отдаёт сырое содержимое файла.
-	req.Header.Set("Accept", "application/vnd.github.raw")
+	if accept != "" {
+		req.Header.Set("Accept", accept)
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
+		return nil, true, err // сетевые/таймаут — транзиентны
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("github api returned status %d", resp.StatusCode)
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+		return nil, resp.StatusCode >= 500,
+			fmt.Errorf("status %d %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return fmt.Errorf("failed to read script body: %w", err)
+		return nil, true, fmt.Errorf("read body: %w", err)
 	}
 	if len(body) == 0 {
-		return fmt.Errorf("downloaded script is empty")
+		return nil, true, fmt.Errorf("empty body")
 	}
-	if err := os.WriteFile(dest, body, 0755); err != nil {
-		return fmt.Errorf("failed to write script: %w", err)
+	return body, false, nil
+}
+
+// downloadInstallScript тянет install.sh, перебирая источники (api.github.com,
+// затем raw.githubusercontent.com) с ретраями на транзиентных ошибках. Раньше
+// был один exec curl без таймаута и без ретраев: единичный 502 от GitHub через
+// VPN-путь ронял всё обновление.
+func downloadInstallScript(dest string) error {
+	sources := []struct{ name, url, accept string }{
+		{"api.github.com", installScriptURLAPI, "application/vnd.github.raw"},
+		{"raw.githubusercontent.com", installScriptURLRaw, ""},
 	}
-	return nil
+
+	var lastErr error
+	for _, s := range sources {
+		for attempt := 1; attempt <= downloadAttempts; attempt++ {
+			body, retryable, err := httpGetBody(s.url, s.accept)
+			if err == nil {
+				if werr := os.WriteFile(dest, body, 0755); werr != nil {
+					return fmt.Errorf("failed to write script: %w", werr)
+				}
+				ulog("install.sh скачан с %s (%d байт, попытка %d)", s.name, len(body), attempt)
+				return nil
+			}
+			lastErr = fmt.Errorf("%s: %w", s.name, err)
+			ulog("скачивание с %s не удалось (попытка %d/%d): %v", s.name, attempt, downloadAttempts, err)
+			if !retryable {
+				break // постоянная ошибка на этом источнике — сразу к следующему
+			}
+			if attempt < downloadAttempts {
+				time.Sleep(time.Duration(attempt) * time.Second)
+			}
+		}
+	}
+	return fmt.Errorf("все источники недоступны: %w", lastErr)
 }
 
 // tailFile возвращает последние n байт файла (для короткой диагностики в статусе).
@@ -278,22 +340,26 @@ func RunUpdate() error {
 	updateMu.Unlock()
 
 	go func() {
-		log.Info().Msg("Downloading update script...")
-		if err := downloadScript(installScriptURL, updateScriptPath); err != nil {
-			log.Error().Err(err).Msg("update: script download failed")
+		// Свежий лог на каждый запуск — весь трейл одной попытки в одном файле.
+		_ = os.WriteFile(updateLogPath, []byte(fmt.Sprintf("=== MagiTrickle update %s ===\n", currentVersion())), 0644)
+		ulog("скачиваю install.sh...")
+
+		if err := downloadInstallScript(updateScriptPath); err != nil {
+			ulog("ОШИБКА скачивания: %v", err)
 			setStatus(Status{State: StateFailed, Step: StepDownloadingScript, Error: err.Error()})
 			return
 		}
 
-		log.Info().Msg("Starting update install process...")
+		ulog("запускаю установку...")
 		setStatus(Status{State: StateRunning, Step: StepInstalling})
 
 		// Отдельная сессия: install.sh перезапускает демона и должен пережить
-		// его остановку. Вывод — в лог-файл для диагностики.
-		runScript := fmt.Sprintf(`sh %s > %s 2>&1; rm -f %s`, updateScriptPath, updateLogPath, updateScriptPath)
+		// его остановку. Вывод дописываем (>>) к трейлу скачивания.
+		runScript := fmt.Sprintf(`sh %s >> %s 2>&1; rm -f %s`, updateScriptPath, updateLogPath, updateScriptPath)
 		cmd := exec.Command("sh", "-c", runScript)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := cmd.Start(); err != nil {
+			ulog("не удалось запустить install.sh: %v", err)
 			setStatus(Status{State: StateFailed, Step: StepInstalling, Error: err.Error()})
 			return
 		}
@@ -306,23 +372,22 @@ func RunUpdate() error {
 		select {
 		case err := <-done:
 			if err != nil {
-				logTail := tailFile(updateLogPath, 2048)
-				log.Error().Err(err).Str("log_tail", logTail).Msg("update: install script failed")
-				setStatus(Status{State: StateFailed, Step: StepInstalling, Error: logTail})
+				ulog("install.sh завершился с ошибкой: %v", err)
+				setStatus(Status{State: StateFailed, Step: StepInstalling, Error: tailFile(updateLogPath, 1024)})
 				return
 			}
 			// Скрипт завершился успешно, а демон всё ещё жив — считаем idle:
 			// либо установка не потребовала рестарта, либо рестарт вот-вот придёт.
+			ulog("install.sh завершился успешно")
 			setStatus(Status{State: StateIdle})
 		case <-time.After(installTimeout):
 			// Убиваем всю процесс-группу (setsid: pgid == pid ребёнка).
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			logTail := tailFile(updateLogPath, 2048)
-			log.Error().Str("log_tail", logTail).Msg("update: install timed out")
+			ulog("установка прервана по таймауту (%s)", installTimeout)
 			setStatus(Status{
 				State: StateFailed,
 				Step:  StepInstalling,
-				Error: "install timed out after " + installTimeout.String() + "; log: " + logTail,
+				Error: "install timed out after " + installTimeout.String(),
 			})
 		}
 	}()

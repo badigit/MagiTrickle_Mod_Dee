@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+# pc-idle.py — с ПК: доносит ли цепочка серверный FIN idle keep-alive конна.
+# Путь: ПК → mihomo HTTP CONNECT (<ROUTER_IP>:7891) → выбранный узел → api.anthropic.com.
+# Паттерн: GET → ответ → тихое ожидание T с прослушкой сокета → GET#2.
+# Вердикты: FIN-DURING-IDLE (server close ДОШЁЛ — цепочка честная),
+#           SILENT-TIMEOUT / RST-ON-PROBE (FIN потерян — зомби),
+#           ALIVE (T < серверного лимита 400с).
+# Матрица узлов: скрипт сам переключает <MIHOMO_SELECTOR> через mihomo API и валидирует.
+import json
+import socket
+import ssl
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+ROUTER = "<ROUTER_IP>"
+PROXY_PORT = 7891
+API = f"http://{ROUTER}:9090"
+HOST = "api.anthropic.com"
+T = int(sys.argv[1]) if len(sys.argv) > 1 else 430
+NODES = [
+    "<node>",
+    "<node>",
+    "<node>",
+    "<node>",
+]
+RESTORE = NODES[0]
+
+
+def api_put_node(name: str) -> None:
+    req = urllib.request.Request(
+        f"{API}/proxies/<MIHOMO_SELECTOR>",
+        data=json.dumps({"name": name}).encode(),
+        method="PUT",
+    )
+    urllib.request.urlopen(req, timeout=5).read()
+
+
+def api_now() -> str:
+    with urllib.request.urlopen(f"{API}/proxies/<MIHOMO_SELECTOR>", timeout=5) as r:
+        return json.load(r)["now"]
+
+
+def http_get(s) -> str:
+    s.sendall(b"GET / HTTP/1.1\r\nHost: " + HOST.encode() + b"\r\n\r\n")
+    s.settimeout(15)
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        d = s.recv(4096)
+        if not d:
+            raise ConnectionError("EOF")
+        buf += d
+    return buf.split(b"\r\n", 1)[0].decode(errors="replace")
+
+
+def probe(node: str, T: int) -> tuple[str, str]:
+    raw = socket.create_connection((ROUTER, PROXY_PORT), timeout=10)
+    raw.sendall(f"CONNECT {HOST}:443 HTTP/1.1\r\nHost: {HOST}:443\r\n\r\n".encode())
+    resp = b""
+    while b"\r\n\r\n" not in resp:
+        d = raw.recv(4096)
+        if not d:
+            return "CONNFAIL", "proxy-eof"
+        resp += d
+    if b" 200 " not in resp.split(b"\r\n", 1)[0]:
+        return "CONNFAIL", resp.split(b"\r\n", 1)[0].decode(errors="replace")
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    s = ctx.wrap_socket(raw, server_hostname=HOST)
+    st1 = http_get(s)
+    if " 404" not in st1 and " 200" not in st1:
+        return "BADFIRST", st1
+    t0 = time.time()
+    verdict = detail = None
+    s.settimeout(T)
+    try:
+        while time.time() - t0 < T:
+            s.settimeout(max(1.0, T - (time.time() - t0)))
+            d = s.recv(4096)
+            if not d:
+                verdict, detail = "FIN-DURING-IDLE", f"after={int(time.time()-t0)}s"
+                break
+    except socket.timeout:
+        pass
+    except ConnectionResetError:
+        verdict, detail = "RST-DURING-IDLE", f"after={int(time.time()-t0)}s"
+    except ConnectionAbortedError:
+        verdict, detail = "ABORT-DURING-IDLE", f"after={int(time.time()-t0)}s"
+    if verdict is None:
+        try:
+            st2 = http_get(s)
+            verdict, detail = "ALIVE", st2
+        except socket.timeout:
+            verdict, detail = "SILENT-TIMEOUT", "-"
+        except ConnectionResetError:
+            verdict, detail = "RST-ON-PROBE", "-"
+        except (ConnectionError, ConnectionAbortedError, OSError) as e:
+            verdict, detail = "DEAD-ON-PROBE", type(e).__name__
+    try:
+        s.close()
+    except OSError:
+        pass
+    return verdict, detail
+
+
+def main() -> None:
+    print(f"T={T}s host={HOST} via {ROUTER}:{PROXY_PORT}")
+    for node in NODES:
+        api_put_node(node)
+        time.sleep(1)
+        now = api_now()
+        if now != node:
+            print(f"{node}\tSWITCH-FAILED (now={now})")
+            continue
+        t0 = time.strftime("%F %T")
+        v, d = probe(node, T)
+        print(f"{t0}\t{node}\tT={T}\t{v}\t{d}", flush=True)
+    api_put_node(RESTORE)
+    print("restored:", api_now())
+
+
+if __name__ == "__main__":
+    main()

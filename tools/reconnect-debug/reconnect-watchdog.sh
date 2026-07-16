@@ -61,11 +61,21 @@ MPID=$!
 # dead-proxied детектор (раз в 60с): «мёртвый проксируемый SYN» = REDIRECT в mihomo:5001,
 # ответа ноль. Сигнатура реальных событий: DESTROY tcp ... reply sport=5001 ... packets=0.
 # Ловит ВСЕ реальные обрывы по всем приложениям (не по 3 доменам зонда). Дедуп по epoch+sport.
+#
+# ФИЛЬТР ФАНТОМОВ (2026-07-16, вскрыто на mihomo-эпике): под ту же DESTROY-сигнатуру
+# попадают teardown-артефакты — одиночный запоздалый сегмент (keepalive ~41Б/финальный ACK)
+# прилетает на порт сразу после DESTROY здорового потока, conntrack заводит loose-запись
+# [NEW]...ESTABLISHED [UNREPLIED] и тут же её убивает (packets=1, reply packets=0).
+# Настоящий мёртвый SYN рождается как [NEW]...SYN_SENT. Поэтому: требуем SYN_SENT-рождение
+# тапла и отсутствие ASSURED-близнеца. Порт-переиспользование в одном часе даёт редкий
+# false negative — осознанно принят (лучше пропустить, чем топить ложняком: 100% строк
+# к api.anthropic.com за 2026-07-16 до фильтра были фантомами).
 DEAD="$DIR/dead-proxied.tsv"; KEYS="$DIR/.dead-keys"
 [ -f "$DEAD" ] || printf 'router_epoch\tiso_local\tdst\torig_sport\tfwd_pkts\traw\n' > "$DEAD"
 touch "$KEYS" 2>/dev/null
 ( while :; do
-    for cf in $(ls -1t "$DIR"/ct-*.log 2>/dev/null | head -2); do
+    CFILES=$(ls -1t "$DIR"/ct-*.log 2>/dev/null | head -2)
+    for cf in $CFILES; do
       grep -E "DESTROY.*[[:space:]]tcp[[:space:]].*sport=${REDIR_PORT} dport=[0-9]+ packets=0" "$cf" 2>/dev/null
     done | while IFS= read -r line; do
       ep=$(echo "$line" | sed -n 's/^\[\([0-9]*\)\..*/\1/p'); [ -z "$ep" ] && continue
@@ -76,6 +86,15 @@ touch "$KEYS" 2>/dev/null
       grep -q "^$key$" "$KEYS" 2>/dev/null && continue
       echo "$key" >> "$KEYS"
       dst=$(echo "$line" | sed -n 's/.*dst=\([0-9.]*\) sport=[0-9]* dport=443.*/\1/p')
+      # lifecycle-валидация тапла по тем же ct-файлам (кандидатов единицы/час — дёшево)
+      dste=$(echo "$dst" | sed 's/\./\\./g')
+      born_syn=0; twin_assured=0
+      for lf in $CFILES; do
+        grep -q "SYN_SENT src=[0-9.]* dst=${dste} sport=${osp} dport=443" "$lf" 2>/dev/null && born_syn=1
+        grep "dst=${dste} sport=${osp} dport=443" "$lf" 2>/dev/null | grep -q ASSURED && twin_assured=1
+      done
+      [ "$born_syn" = 1 ] || continue      # не рождался SYN_SENT'ом = teardown-фантом
+      [ "$twin_assured" = 0 ] || continue  # был здоровый близнец на тапле = фантом/reuse
       fwd=$(echo "$line" | sed -n 's/.*dport=443 packets=\([0-9]*\).*/\1/p')
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$ep" "$(date -d @"$ep" '+%F %T' 2>/dev/null || echo -)" "$dst" "$osp" "$fwd" "$line" >> "$DEAD"
     done

@@ -122,6 +122,12 @@ powershell -File scripts/update-router-package.ps1   # берёт свежий �
 reply-tuple. Длительность spell — между `SPELL-START` и `SPELL-END`.
 
 **Грабли (выловлены, не повторять):**
+- **dead-proxied ложняк (2026-07-16, вскрыт на mihomo-эпике):** conntrack на одиночный запоздалый
+  сегмент (keepalive ~41Б/финальный ACK) после DESTROY здорового потока заводит loose-запись
+  `[NEW]...ESTABLISHED [UNREPLIED]` и тут же убивает — DESTROY-сигнатура неотличима от мёртвого SYN.
+  100% «Anthropic-стойлов» за 2026-07-16 были такими фантомами (у всех ASSURED-близнец на том же
+  тапле). Детектор теперь требует SYN_SENT-рождение + отсутствие ASSURED-близнеца. При разборе
+  строки dead-proxied.tsv всегда смотри ПОЛНЫЙ lifecycle тапла в ct-логе, не только DESTROY.
 - PowerShell: `Select -Expand IPAddress` при ОДНОМ IP даёт скаляр-строку; функция ещё и разворачивает
   одноэлементный массив на возврате → `$ips[0]`='1'. Всегда `@(...)` на МЕСТЕ вызова.
 - ssh из detached-процесса: `-o BatchMode=yes -o ConnectTimeout=10`, иначе вис на password-промпте без TTY.

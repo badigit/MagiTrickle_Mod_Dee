@@ -17,3 +17,6 @@ tools/reconnect-debug/watchdog.conf
 .dolt/
 *.db
 .beads-credential-key
+
+# Beads: runtime-каталог прокси (требуется bd 1.1.0)
+.beads/proxieddb/

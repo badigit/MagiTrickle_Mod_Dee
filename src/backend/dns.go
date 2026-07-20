@@ -131,25 +131,68 @@ func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.M
 	// фильтрации AAAA ниже (dns.Msg — структура, slice-header Answer копируется).
 	// В итоге handleMessage парсил бы нефильтрованный ответ и добавлял AAAA в
 	// nftset даже при активном drop. Замыкание вычисляет respMsg в момент выхода.
+	//
+	// ВАЖНО: handleMessage должен видеть ОРИГИНАЛЬНЫЙ TTL — ipset живёт
+	// origTTL+AdditionalTTL. Поэтому TTL-cap применяем к ОТДЕЛЬНОЙ клиентской
+	// копии (capAnswersTTL копирует капаемые RR), не мутируя respMsg.Answer[i].
 	defer func() { a.handleMessage(respMsg, clientAddr, network) }()
 
-	if a.config.DNSProxy.DisableDropAAAA {
+	dropAAAA := !a.config.DNSProxy.DisableDropAAAA
+	if dropAAAA {
+		// фильтрация записей AAAA (in-place на respMsg: handleMessage не должен
+		// класть AAAA в ipset при активном drop)
+		filteredAnswers := make([]dns.RR, 0, len(respMsg.Answer))
+		for _, answer := range respMsg.Answer {
+			if answer == nil {
+				continue
+			}
+			if answer.Header().Rrtype != dns.TypeAAAA {
+				filteredAnswers = append(filteredAnswers, answer)
+			}
+		}
+		respMsg.Answer = filteredAnswers
+	}
+
+	ttlCap := a.config.DNSProxy.ClientTTLCap
+
+	// Ничего менять в клиентском ответе не нужно — отдаём оригинальные байты.
+	// Капать имеет смысл только для success-ответов: у NXDOMAIN/negative
+	// answer-секция пуста (SOA лежит в Ns), поэтому cap их не трогает.
+	if ttlCap == 0 && !dropAAAA {
 		return nil, nil
 	}
 
-	// фильтрация записей AAAA
-	filteredAnswers := make([]dns.RR, 0, len(respMsg.Answer))
-	for _, answer := range respMsg.Answer {
-		if answer == nil {
+	clientMsg := respMsg // мелкая копия структуры (slice-header Answer общий)
+	if ttlCap > 0 {
+		clientMsg.Answer = capAnswersTTL(respMsg.Answer, ttlCap)
+	}
+	return &clientMsg, nil
+}
+
+// capAnswersTTL возвращает копию answers, в которой A/AAAA/CNAME с TTL > ttlCap
+// получают TTL = ttlCap. Записи с TTL <= ttlCap и прочие типы переиспользуются
+// как есть (тот же указатель). Копируются ТОЛЬКО капаемые RR — чтобы не
+// мутировать RR, которые параллельно читает handleMessage (в ipset должен уйти
+// ОРИГИНАЛЬНЫЙ TTL, cap не должен протечь).
+func capAnswersTTL(answers []dns.RR, ttlCap uint32) []dns.RR {
+	out := make([]dns.RR, 0, len(answers))
+	for _, rr := range answers {
+		if rr == nil {
 			continue
 		}
-		if answer.Header().Rrtype != dns.TypeAAAA {
-			filteredAnswers = append(filteredAnswers, answer)
+		hdr := rr.Header()
+		if hdr.Ttl > ttlCap {
+			switch rr.(type) {
+			case *dns.A, *dns.AAAA, *dns.CNAME:
+				cp := dns.Copy(rr)
+				cp.Header().Ttl = ttlCap
+				out = append(out, cp)
+				continue
+			}
 		}
+		out = append(out, rr)
 	}
-	respMsg.Answer = filteredAnswers
-
-	return &respMsg, nil
+	return out
 }
 
 // handleMessage обрабатывает полученное DNS-сообщение

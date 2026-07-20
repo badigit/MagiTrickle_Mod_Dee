@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -26,6 +27,10 @@ type Records struct {
 
 	// Обратный индекс: alias → []domains, которые на него ссылаются
 	reverseAliases map[string][]string
+
+	// dirty=true, если кэш менялся с момента последней записи снапшота на диск.
+	// Персист пишет файл только при dirty (флеш-износ). См. persist.go.
+	dirty atomic.Bool
 }
 
 func (r *Records) AddAlias(domainName, alias string, ttl uint32) {
@@ -33,10 +38,21 @@ func (r *Records) AddAlias(domainName, alias string, ttl uint32) {
 		return
 	}
 
+	deadline := time.Now().Add(time.Duration(ttl) * time.Second)
+
 	r.locker.Lock()
 	defer r.locker.Unlock()
 
-	deadline := time.Now().Add(time.Duration(ttl) * time.Second)
+	r.addAliasLocked(domainName, alias, deadline)
+	r.dirty.Store(true)
+}
+
+// addAliasLocked — тело AddAlias без блокировки и без пометки dirty. Переиспользуется
+// загрузкой снапшота (LoadSnapshot), которая держит lock и не должна взводить dirty.
+func (r *Records) addAliasLocked(domainName, alias string, deadline time.Time) {
+	if domainName == alias {
+		return
+	}
 
 	// Удаляем старый reverse alias если был
 	if oldAlias, ok := r.aliases[domainName]; ok {
@@ -70,11 +86,18 @@ func (r *Records) removeReverseAlias(alias, domainName string) {
 }
 
 func (r *Records) AddAddress(domainName string, addr net.IP, ttl uint32) {
+	deadline := time.Now().Add(time.Duration(ttl) * time.Second)
+
 	r.locker.Lock()
 	defer r.locker.Unlock()
 
-	deadline := time.Now().Add(time.Duration(ttl) * time.Second)
+	r.addAddressLocked(domainName, addr, deadline)
+	r.dirty.Store(true)
+}
 
+// addAddressLocked — тело AddAddress без блокировки и без пометки dirty.
+// Переиспользуется LoadSnapshot (держит lock, dirty взводить не должна).
+func (r *Records) addAddressLocked(domainName string, addr net.IP, deadline time.Time) {
 	addresses := r.addresses[domainName]
 	for _, aRecord := range addresses {
 		if aRecord.Address.Equal(addr) {

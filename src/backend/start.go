@@ -63,7 +63,20 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}()
 
 	a.recordsCache = recordsCache.New()
+	// Загружаем снапшот кэша с прошлого запуска ДО bringUpRouting: group.Sync
+	// наполнит ipset из recordsCache без единого сетевого запроса (автопрогрев
+	// после старта/обновления). Закрывает деградацию «рестарт демона опустошает
+	// ipset при живых клиентских кэшах» (mt-pqa).
+	if err := a.recordsCache.Load(recordsCacheSnapshotLocation); err != nil {
+		log.Warn().Err(err).Msg("failed to load records cache snapshot")
+	} else {
+		log.Info().Int("domains", len(a.recordsCache.ListKnownDomains())).Msg("records cache snapshot loaded")
+	}
 	a.recordsCache.StartCleanup(ctx, 30*time.Second)
+	a.recordsCache.StartPersist(ctx, 5*time.Minute, recordsCacheSnapshotLocation)
+	// Синхронный финальный флеш на выходе (SIGTERM-путь): гарантирует запись,
+	// даже если StartPersist-горутина не успеет отработать ctx.Done до выхода.
+	defer func() { _, _ = a.recordsCache.Save(recordsCacheSnapshotLocation) }()
 
 	nfh, err := netfilterTools.New(a.config.Netfilter.IPTables.ChainPrefix, a.config.Netfilter.IPSet.TablePrefix, a.config.Netfilter.DisableIPv4, a.config.Netfilter.DisableIPv6, a.config.Netfilter.StartMarkTableIndex)
 	if err != nil {
@@ -153,6 +166,7 @@ func (a *App) Start(ctx context.Context) (err error) {
 	defer func() { _ = a.bringDownRouting() }()
 
 	a.startSubscriptionSyncLoop(newCtx, errChan)
+	a.startStaticSubnetReassertLoop(newCtx)
 
 	for {
 		select {
@@ -166,6 +180,36 @@ func (a *App) Start(ctx context.Context) (err error) {
 			return nil
 		}
 	}
+}
+
+// startStaticSubnetReassertLoop периодически ре-фиксирует permanent
+// subnet-записи всех групп (см. Group.ReassertStaticSubnets): ipset-refresh
+// правило TPROXY (mt-9g7 C) сбрасывает timeout статической /32-записи при
+// новом соединении на её IP; без ре-фиксации такая запись истекла бы после
+// паузы в трафике. Интервал 15 мин ограничивает максимальное окно утечки.
+func (a *App) startStaticSubnetReassertLoop(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if !a.routingActive.Load() {
+					continue
+				}
+				a.WithConfigRead(func() {
+					for _, g := range a.routingGroups() {
+						if err := g.ReassertStaticSubnets(); err != nil {
+							log.Warn().Err(err).Str("group", g.Name).Msg("failed to reassert static subnets")
+						}
+					}
+				})
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) ForceCommitIPTables() error {

@@ -17,6 +17,11 @@ var DefaultAppConfig = models.AppConfig{
 		MaxIdleConns:    10,
 		MaxConcurrent:   100,
 		Timeout:         5000 * time.Millisecond,
+		// Капаем клиентский DNS TTL до 300с, чтобы кэш ОС/приложений не переживал
+		// запись в ipset (mt-9g7). На TTL самой ipset-записи не влияет. 300 —
+		// баланс: запас против ipset-жизни (86400+) ~300×, самовосстановление
+		// после потери ipset ≤5 мин (ср. KVAS: max-ttl=3600 при тех же 86400).
+		ClientTTLCap: 300,
 	},
 	HTTPWeb: models.AppConfigHTTPWeb{
 		Enabled: true,
@@ -34,8 +39,11 @@ var DefaultAppConfig = models.AppConfig{
 			ChainPrefix: "MT_",
 		},
 		IPSet: models.AppConfigIPSet{
-			TablePrefix:   "mt_",
-			AdditionalTTL: 3600,
+			TablePrefix: "mt_",
+			// 24ч: ipset-запись живёт долго после последнего DNS-запроса через
+			// роутер. Дёшево (~50Б/запись) и закрывает класс «клиент помнит IP,
+			// ipset остыл» для клиентов с собственным IP-кэшем (mt-9g7).
+			AdditionalTTL: 86400,
 		},
 		DisableIPv4:         false,
 		DisableIPv6:         false,

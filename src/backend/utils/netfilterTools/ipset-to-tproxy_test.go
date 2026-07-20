@@ -246,7 +246,7 @@ func TestIPSetToTProxyFactory(t *testing.T) {
 	}
 
 	ipset := &IPSet{ipsetName: "mts_test"}
-	result := nh.IPSetToTProxy("group1", 5001, ipset)
+	result := nh.IPSetToTProxy("group1", 5001, ipset, 86400)
 
 	if result.chainName != "MT_group1" {
 		t.Errorf("chainName = %q, want %q", result.chainName, "MT_group1")
@@ -262,5 +262,66 @@ func TestIPSetToTProxyFactory(t *testing.T) {
 	}
 	if result.startIdx != 100 {
 		t.Errorf("startIdx = %d, want %d", result.startIdx, 100)
+	}
+	if result.refreshTimeout != 86400 {
+		t.Errorf("refreshTimeout = %d, want %d", result.refreshTimeout, 86400)
+	}
+}
+
+// TestInsertIPTablesRulesRefresh проверяет, что при refreshTimeout > 0 в mangle-
+// цепочку ПЕРВЫМ добавляется правило продления ipset для conntrack NEW (mt-9g7,
+// часть C). Оно должно стоять до socket/TPROXY-правил и капать по --timeout.
+func TestInsertIPTablesRulesRefresh(t *testing.T) {
+	r, fake := newTProxyTestFixture(iptables.ProtocolIPv4)
+	r.refreshTimeout = 86400
+
+	if err := r.insertIPTablesRules(r.nh.IPTables4); err != nil {
+		t.Fatalf("insertIPTablesRules failed: %v", err)
+	}
+	if err := r.nh.IPTables4.Commit(); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	mangleRules := fake.GetRules("mangle", "MT_TEST")
+	expectedMangle := [][]string{
+		{"-m", "conntrack", "--ctstate", "NEW", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "SET", "--add-set", "mt_test_4", "dst", "--exist", "--timeout", "86400"},
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "ACCEPT"},
+		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "100/100"},
+	}
+	if !reflect.DeepEqual(mangleRules, expectedMangle) {
+		t.Errorf("mangle chain rules mismatch.\nExpected: %v\nGot:      %v", expectedMangle, mangleRules)
+	}
+
+	// NAT-цепочка (TCP REDIRECT) не должна меняться правилом продления.
+	natRules := fake.GetRules("nat", "MT_TEST")
+	expectedNat := [][]string{
+		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "REDIRECT", "--to-port", "5001"},
+	}
+	if !reflect.DeepEqual(natRules, expectedNat) {
+		t.Errorf("nat chain rules mismatch.\nExpected: %v\nGot:      %v", expectedNat, natRules)
+	}
+}
+
+// TestInsertIPTablesRulesNoRefresh проверяет, что при refreshTimeout == 0
+// правило продления НЕ добавляется (обратная совместимость).
+func TestInsertIPTablesRulesNoRefresh(t *testing.T) {
+	r, fake := newTProxyTestFixture(iptables.ProtocolIPv4)
+	r.refreshTimeout = 0
+
+	if err := r.insertIPTablesRules(r.nh.IPTables4); err != nil {
+		t.Fatalf("insertIPTablesRules failed: %v", err)
+	}
+	if err := r.nh.IPTables4.Commit(); err != nil {
+		t.Fatalf("Commit failed: %v", err)
+	}
+
+	mangleRules := fake.GetRules("mangle", "MT_TEST")
+	for _, rule := range mangleRules {
+		for _, arg := range rule {
+			if arg == "SET" {
+				t.Errorf("mangle chain must not contain SET-refresh rule when refreshTimeout==0: %v", mangleRules)
+			}
+		}
 	}
 }

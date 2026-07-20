@@ -27,6 +27,14 @@ type CaptureStatus struct {
 	Domains   []CapturedDomain `json:"domains,omitempty"`
 }
 
+// WarmupResult — итог прогрева ipset ре-резолвом (POST /api/v1/warmup).
+type WarmupResult struct {
+	Matched   int  `json:"matched"`   // имён из recordsCache, сматченных активными правилами
+	Queried   int  `json:"queried"`   // реально переспрошено через DNS-путь
+	Errors    int  `json:"errors"`    // из них завершились ошибкой
+	Truncated bool `json:"truncated"` // список обрезан лимитом
+}
+
 // DNSCapturer — интерфейс для захвата DNS-запросов.
 type DNSCapturer interface {
 	Start(filterIP string)
@@ -72,6 +80,9 @@ type Main interface {
 	StartedAt() time.Time
 	IsRoutingActive() bool
 	SetEnabled(enabled bool) error
+	// Warmup ре-резолвит имена из recordsCache, сматченные активными правилами,
+	// через штатный DNS-путь → наполняет ipset. Ручной прогон после простоя.
+	Warmup(ctx context.Context) (WarmupResult, error)
 }
 
 type Group interface {

@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import { t, locale } from "../../data/locale.svelte";
-  import { routing } from "../../data/routing.svelte";
-  import { fetcher } from "../../utils/fetcher";
-  import { overlay, toast } from "../../utils/events";
+  import { onDestroy, onMount } from "svelte";
+
   import Button from "../../components/ui/Button.svelte";
   import Switch from "../../components/ui/Switch.svelte";
-  import { RefreshCw, Download } from "../../components/ui/icons";
+  import { locale, t } from "../../data/locale.svelte";
+  import { routing } from "../../data/routing.svelte";
   import { updater } from "../../data/updater.svelte";
+  import { warmup } from "../../data/warmup.svelte";
+
+  import { Download, Flame, RefreshCw } from "../../components/ui/icons";
+  import { overlay, toast } from "../../utils/events";
+  import { fetcher } from "../../utils/fetcher";
 
   const RELOAD_DELAY_MS = 8000;
 
@@ -104,6 +107,40 @@
   <section class="card">
     <div class="row">
       <div class="info">
+        <h3>{t("Warm up ipset")}</h3>
+        <p class="hint">{t("Warmup hint")}</p>
+        {#if warmup.state.last}
+          <p class="uptime">
+            <span class="uptime-label">{t("Last warmup")}:</span>
+            <span class="uptime-value">{warmup.state.last.queried}/{warmup.state.last.matched}</span
+            >
+            {#if warmup.state.last.errors > 0}
+              <span class="uptime-since">({warmup.state.last.errors} {t("errors")})</span>
+            {/if}
+            {#if warmup.state.last.truncated}
+              <span class="uptime-since">({t("truncated")})</span>
+            {/if}
+          </p>
+        {/if}
+      </div>
+      <Button
+        onclick={() => warmup.run()}
+        inactive={warmup.state.busy || (routing.state.loaded && !routing.state.enabled)}
+      >
+        {#if warmup.state.busy}
+          <span class="update-spinner"><RefreshCw size={18} /></span>
+          {t("Warming up...")}
+        {:else}
+          <Flame size={18} />
+          {t("Warm up")}
+        {/if}
+      </Button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <div class="info">
         <h3>{t("Restart service")}</h3>
         <p class="hint">{t("Restarts magitrickled. The page will reload automatically.")}</p>
         <p class="uptime">
@@ -130,7 +167,8 @@
           {#if updater.newVersion && !updater.updating}
             <br />
             <span style="color: var(--green); font-weight: 500;">
-              {t("New version available:")} {updater.newVersion}
+              {t("New version available:")}
+              {updater.newVersion}
             </span>
           {/if}
           {#if updater.updating}
@@ -170,11 +208,7 @@
         </Button>
 
         {#if updater.newVersion}
-          <Button
-            onclick={() => updater.runUpdate()}
-            inactive={updater.updating}
-            variant="primary"
-          >
+          <Button onclick={() => updater.runUpdate()} inactive={updater.updating} variant="primary">
             {#if updater.updating}
               <span class="update-spinner"><RefreshCw size={18} /></span>
               {updater.phaseLabel()}
@@ -203,7 +237,9 @@
     border-radius: 8px;
     padding: 1rem 1.2rem;
     background: var(--bg-card, transparent);
-    transition: border-color 0.2s, background 0.2s;
+    transition:
+      border-color 0.2s,
+      background 0.2s;
   }
 
   .card.card-off {

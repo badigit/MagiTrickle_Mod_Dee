@@ -60,6 +60,24 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Warmup
+//
+//	@Summary		Прогреть ipset ре-резолвом
+//	@Description	Переспрашивает через DNS-путь имена из recordsCache, сматченные активными правилами, наполняя ipset. Лечит «клиент помнит IP, ipset остыл» после простоя.
+//	@Tags			system
+//	@Produce		json
+//	@Success		200		{object}	app.WarmupResult
+//	@Failure		500		{object}	types.ErrorRes
+//	@Router			/api/v1/warmup [post]
+func (h *Handler) Warmup(w http.ResponseWriter, r *http.Request) {
+	res, err := h.app.Warmup(r.Context())
+	if err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, fmt.Errorf("warmup failed: %w", err).Error())
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, res)
+}
+
 // ListInterfaces
 //
 //	@Summary		Получить список интерфейсов

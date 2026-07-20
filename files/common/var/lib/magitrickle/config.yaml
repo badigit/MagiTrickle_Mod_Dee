@@ -21,12 +21,13 @@ app:
     maxIdleConns: 10
     maxConcurrent: 100
     timeout: 5000
+    clientTTLCap: 300
   netfilter:
     iptables:
       chainPrefix: MT_
     ipset:
       tablePrefix: mt_
-      additionalTTL: 3600
+      additionalTTL: 86400
     disableIPv4: false
     disableIPv6: false
     startMarkTableIndex: 1298229097

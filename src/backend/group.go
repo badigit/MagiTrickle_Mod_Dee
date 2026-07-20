@@ -26,6 +26,17 @@ type Group struct {
 	ipset         *netfilterTools.IPSet
 	ipsetToLink   *netfilterTools.IPSetToLink
 	ipsetToTProxy *netfilterTools.IPSetToTProxy
+
+	// staticHostV4/V6 — точные host-члены ipset (одиночные IP) из статических
+	// subnet-правил группы. Это permanent-записи (timeout=0); динамический add
+	// с TTL (DNS-путь) не должен их перезаписывать: netlink Replace:true сбросил
+	// бы timeout 0 → запись стала бы испаряемой (близнец апстримного
+	// «TODO: Check already existed» в dns.go). Кэш обновляется в sync() и
+	// ReassertStaticSubnets() под g.locker; читается в AddIPv4/IPv6Subnet под
+	// тем же локом. nil-map до первого sync — безопасно (lookup по nil = miss;
+	// до первого sync в сете ещё нет статических записей, клобберить нечего).
+	staticHostV4 map[[4]byte]struct{}
+	staticHostV6 map[[16]byte]struct{}
 }
 
 func (g *Group) Enabled() bool {
@@ -63,6 +74,14 @@ func (g *Group) AddIPv4Subnet(subnet netfilterTools.IPv4Subnet, ttl netfilterToo
 		return nil
 	}
 
+	// Guard: TTL'ный add на IP, совпадающий со статическим host-членом, скипаем —
+	// permanent-запись уже покрывает этот IP, а Replace:true сбросил бы её вечность.
+	if ttl != nil && (subnet.CIDR == 0 || subnet.CIDR == 32) {
+		if _, ok := g.staticHostV4[subnet.Address]; ok {
+			return nil
+		}
+	}
+
 	return g.addIPv4Subnet(subnet, ttl)
 }
 
@@ -79,6 +98,13 @@ func (g *Group) AddIPv6Subnet(subnet netfilterTools.IPv6Subnet, ttl netfilterToo
 
 	if !g.Group.Enable {
 		return nil
+	}
+
+	// Guard: см. AddIPv4Subnet — не клобберим permanent host-члены TTL'ным add'ом.
+	if ttl != nil && (subnet.CIDR == 0 || subnet.CIDR == 128) {
+		if _, ok := g.staticHostV6[subnet.Address]; ok {
+			return nil
+		}
 	}
 
 	return g.addIPv6Subnet(subnet, ttl)
@@ -169,7 +195,7 @@ func (g *Group) enable() error {
 
 	switch g.Group.EffectiveRouteMode() {
 	case models.RouteModeTProxy:
-		ipsetToTProxy := g.app.nfHelper.IPSetToTProxy(g.runtimeID, g.app.config.Netfilter.TProxyPort, ipset)
+		ipsetToTProxy := g.app.nfHelper.IPSetToTProxy(g.runtimeID, g.app.config.Netfilter.TProxyPort, ipset, g.app.config.Netfilter.IPSet.AdditionalTTL)
 		if err := ipsetToTProxy.ClearIfDisabled(); err != nil {
 			return fmt.Errorf("failed to clear iptables: %w", err)
 		}
@@ -278,100 +304,26 @@ func (g *Group) sync() error {
 	now := time.Now()
 	newIPv4SubnetList := make(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout)
 	newIPv6SubnetList := make(map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout)
+
+	// Статические subnet-правила — permanent-записи (timeout=0). Парсинг вынесен
+	// в staticSubnetsFromRules, чтобы переиспользовать в ReassertStaticSubnets.
+	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
+	g.updateStaticHostCache(v4Static, v6Static)
+	for _, subnet := range v4Static {
+		newIPv4SubnetList[subnet] = nil
+	}
+	for _, subnet := range v6Static {
+		newIPv6SubnetList[subnet] = nil
+	}
+
 	knownDomains := g.app.recordsCache.ListKnownDomains()
 	for _, domain := range g.Rules {
 		if !domain.IsEnabled() {
 			continue
 		}
 		switch domain.Type {
-		case models.RuleTypeSubnet:
-			ip, ipNet, err := net.ParseCIDR(domain.Rule)
-			if err != nil {
-				ip = net.ParseIP(domain.Rule)
-				if ip == nil {
-					continue
-				}
-
-				ip = ip.To4()
-				if ip == nil {
-					continue
-				}
-
-				ipNet = &net.IPNet{
-					IP:   ip,
-					Mask: net.CIDRMask(32, 32),
-				}
-			}
-
-			ones, bits := ipNet.Mask.Size()
-			if bits != 32 || ones > 32 {
-				continue
-			}
-
-			var addr [4]byte
-			copy(addr[:], ipNet.IP.Mask(ipNet.Mask).To4())
-			cidr := uint8(ones)
-
-			if addr == ([4]byte{}) && cidr == 0 {
-				// TODO: Fix (remove dirty hack) after resolving https://github.com/vishvananda/netlink/issues/1091
-				newIPv4SubnetList[netfilterTools.IPv4Subnet{
-					Address: [4]byte{0x00},
-					CIDR:    1,
-				}] = nil
-				newIPv4SubnetList[netfilterTools.IPv4Subnet{
-					Address: [4]byte{0x80},
-					CIDR:    1,
-				}] = nil
-			} else {
-				newIPv4SubnetList[netfilterTools.IPv4Subnet{
-					Address: addr,
-					CIDR:    cidr,
-				}] = nil
-			}
-
-		case models.RuleTypeSubnet6:
-			ip, ipNet, err := net.ParseCIDR(domain.Rule)
-			if err != nil {
-				ip = net.ParseIP(domain.Rule)
-				if ip == nil {
-					continue
-				}
-
-				ip = ip.To16()
-				if ip == nil {
-					continue
-				}
-
-				ipNet = &net.IPNet{
-					IP:   ip,
-					Mask: net.CIDRMask(128, 128),
-				}
-			}
-
-			ones, bits := ipNet.Mask.Size()
-			if bits != 128 || ones > 128 {
-				continue
-			}
-
-			var addr [16]byte
-			copy(addr[:], ipNet.IP.Mask(ipNet.Mask).To16())
-			cidr := uint8(ones)
-
-			if addr == ([16]byte{}) && cidr == 0 {
-				newIPv6SubnetList[netfilterTools.IPv6Subnet{
-					Address: [16]byte{0x00},
-					CIDR:    1,
-				}] = nil
-				newIPv6SubnetList[netfilterTools.IPv6Subnet{
-					Address: [16]byte{0x80},
-					CIDR:    1,
-				}] = nil
-			} else {
-				newIPv6SubnetList[netfilterTools.IPv6Subnet{
-					Address: addr,
-					CIDR:    cidr,
-				}] = nil
-			}
+		case models.RuleTypeSubnet, models.RuleTypeSubnet6:
+			// собраны выше через staticSubnetsFromRules
 
 		default:
 			for _, domainName := range knownDomains {
@@ -480,6 +432,155 @@ func (g *Group) sync() error {
 	}
 
 	return nil
+}
+
+// staticSubnetsFromRules собирает включённые subnet/subnet6-правила в виде
+// ipset-подсетей (permanent-записи, timeout=0). Вынесено из sync для
+// переиспользования в ReassertStaticSubnets. Повторяет прежнее поведение sync,
+// включая обход netlink-бага с 0.0.0.0/0 (split на две /1,
+// https://github.com/vishvananda/netlink/issues/1091).
+func staticSubnetsFromRules(rules []*models.Rule) ([]netfilterTools.IPv4Subnet, []netfilterTools.IPv6Subnet) {
+	var v4 []netfilterTools.IPv4Subnet
+	var v6 []netfilterTools.IPv6Subnet
+
+	for _, rule := range rules {
+		if !rule.IsEnabled() {
+			continue
+		}
+		switch rule.Type {
+		case models.RuleTypeSubnet:
+			ip, ipNet, err := net.ParseCIDR(rule.Rule)
+			if err != nil {
+				ip = net.ParseIP(rule.Rule)
+				if ip == nil {
+					continue
+				}
+
+				ip = ip.To4()
+				if ip == nil {
+					continue
+				}
+
+				ipNet = &net.IPNet{
+					IP:   ip,
+					Mask: net.CIDRMask(32, 32),
+				}
+			}
+
+			ones, bits := ipNet.Mask.Size()
+			if bits != 32 || ones > 32 {
+				continue
+			}
+
+			var addr [4]byte
+			copy(addr[:], ipNet.IP.Mask(ipNet.Mask).To4())
+			cidr := uint8(ones)
+
+			if addr == ([4]byte{}) && cidr == 0 {
+				v4 = append(v4,
+					netfilterTools.IPv4Subnet{Address: [4]byte{0x00}, CIDR: 1},
+					netfilterTools.IPv4Subnet{Address: [4]byte{0x80}, CIDR: 1},
+				)
+			} else {
+				v4 = append(v4, netfilterTools.IPv4Subnet{Address: addr, CIDR: cidr})
+			}
+
+		case models.RuleTypeSubnet6:
+			ip, ipNet, err := net.ParseCIDR(rule.Rule)
+			if err != nil {
+				ip = net.ParseIP(rule.Rule)
+				if ip == nil {
+					continue
+				}
+
+				ip = ip.To16()
+				if ip == nil {
+					continue
+				}
+
+				ipNet = &net.IPNet{
+					IP:   ip,
+					Mask: net.CIDRMask(128, 128),
+				}
+			}
+
+			ones, bits := ipNet.Mask.Size()
+			if bits != 128 || ones > 128 {
+				continue
+			}
+
+			var addr [16]byte
+			copy(addr[:], ipNet.IP.Mask(ipNet.Mask).To16())
+			cidr := uint8(ones)
+
+			if addr == ([16]byte{}) && cidr == 0 {
+				v6 = append(v6,
+					netfilterTools.IPv6Subnet{Address: [16]byte{0x00}, CIDR: 1},
+					netfilterTools.IPv6Subnet{Address: [16]byte{0x80}, CIDR: 1},
+				)
+			} else {
+				v6 = append(v6, netfilterTools.IPv6Subnet{Address: addr, CIDR: cidr})
+			}
+		}
+	}
+
+	return v4, v6
+}
+
+// updateStaticHostCache пересобирает кэш host-членов (одиночных IP) статических
+// subnet-правил из уже распарсенного результата staticSubnetsFromRules.
+// Host-члены — только CIDR 32/128 (одиночные IP и /32-/128-правила); широкие
+// подсети и dirty-hack /1 в кэш не попадают (DNS-add на IP внутри них — другой
+// ipset-member, клоббера нет). Вызывать под g.locker.
+func (g *Group) updateStaticHostCache(v4 []netfilterTools.IPv4Subnet, v6 []netfilterTools.IPv6Subnet) {
+	hostV4 := make(map[[4]byte]struct{})
+	for _, subnet := range v4 {
+		if subnet.CIDR == 32 {
+			hostV4[subnet.Address] = struct{}{}
+		}
+	}
+	hostV6 := make(map[[16]byte]struct{})
+	for _, subnet := range v6 {
+		if subnet.CIDR == 128 {
+			hostV6[subnet.Address] = struct{}{}
+		}
+	}
+	g.staticHostV4, g.staticHostV6 = hostV4, hostV6
+}
+
+// ReassertStaticSubnets повторно добавляет статические subnet-записи как
+// permanent (timeout=0, Replace). Противоядие от ipset-refresh правила TPROXY
+// (mt-9g7, часть C): SET --add-set --exist --timeout при НОВОМ соединении на
+// IP, совпадающий со статической /32-записью, сбрасывает её timeout с 0
+// (вечный) на refresh-значение — статическое правило становилось бы
+// «испаряемым» и после суток тишины тихо уходило бы direct. Дёшево: записей
+// мало, листинга сета нет. Читает g.Rules — вызывать под cfgMu (WithConfigRead).
+func (g *Group) ReassertStaticSubnets() error {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+
+	if !g.Enabled() {
+		return nil
+	}
+
+	if !g.Group.Enable {
+		return nil
+	}
+
+	v4, v6 := staticSubnetsFromRules(g.Rules)
+	g.updateStaticHostCache(v4, v6)
+	var errs []error
+	for _, subnet := range v4 {
+		if err := g.addIPv4Subnet(subnet, nil); err != nil {
+			errs = append(errs, fmt.Errorf("failed to reassert %s: %w", subnet.String(), err))
+		}
+	}
+	for _, subnet := range v6 {
+		if err := g.addIPv6Subnet(subnet, nil); err != nil {
+			errs = append(errs, fmt.Errorf("failed to reassert %s: %w", subnet.String(), err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (g *Group) Sync() error {

@@ -21,6 +21,9 @@ const cfgFolderLocation = constant.AppStateDir
 const cfgFileLocation = cfgFolderLocation + "/config.yaml"
 const cfgInterfaceFileLocation = cfgFolderLocation + "/config_interfaces.mtrickle"
 
+// recordsCacheSnapshotLocation — персист DNS-кэша между запусками (mt-pqa).
+const recordsCacheSnapshotLocation = cfgFolderLocation + "/records-cache.snap"
+
 func (a *App) LoadConfig() error {
 	cfgFile, err := os.ReadFile(cfgFileLocation)
 	if err != nil {
@@ -177,6 +180,9 @@ func (a *App) ImportConfig(cfg config.Config) error {
 			}
 			if cfg.App.DNSProxy.Timeout != nil {
 				a.config.DNSProxy.Timeout = time.Duration(*cfg.App.DNSProxy.Timeout) * time.Millisecond
+			}
+			if cfg.App.DNSProxy.ClientTTLCap != nil {
+				a.config.DNSProxy.ClientTTLCap = *cfg.App.DNSProxy.ClientTTLCap
 			}
 		}
 
@@ -404,6 +410,7 @@ func (a *App) ExportConfig() config.Config {
 				MaxIdleConns:    &a.config.DNSProxy.MaxIdleConns,
 				MaxConcurrent:   &a.config.DNSProxy.MaxConcurrent,
 				Timeout:         func(u uint) *uint { return &u }(uint(a.config.DNSProxy.Timeout.Milliseconds())),
+				ClientTTLCap:    &a.config.DNSProxy.ClientTTLCap,
 			},
 			Netfilter: &config.Netfilter{
 				IPTables: &config.IPTables{

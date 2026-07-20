@@ -38,6 +38,12 @@ type AppConfigDNSProxy struct {
 	MaxIdleConns     uint
 	MaxConcurrent    uint
 	Timeout          time.Duration
+	// ClientTTLCap ограничивает TTL, отдаваемый КЛИЕНТУ в A/AAAA/CNAME-ответах
+	// (секунды). 0 = не капать. Нужен, чтобы клиентский DNS-кэш не переживал
+	// запись в ipset: иначе клиент шлёт на запомненный IP не переспрашивая DNS,
+	// ipset остывает, и новый коннект уходит direct мимо прокси (mt-240/mt-9g7).
+	// Cap НЕ влияет на TTL записи в ipset — там всегда оригинальный origTTL+AdditionalTTL.
+	ClientTTLCap uint32
 }
 
 type AppConfigDNSProxyServer struct {

@@ -26,14 +26,19 @@ type IPSetToTProxy struct {
 	chainName string
 	port      uint16
 	startIdx  uint32
-	ipset     *IPSet
-	nh        *Helper
-	mark      uint32
-	table     int
-	ip4Rule   *netlink.Rule
-	ip6Rule   *netlink.Rule
-	ip4Route  *netlink.Route
-	ip6Route  *netlink.Route
+	// refreshTimeout (сек) — на сколько продлевать запись живого IP в ipset при
+	// КАЖДОМ НОВОМ соединении к нему (conntrack NEW). 0 = не добавлять правило
+	// продления. Обычно = AdditionalTTL, чтобы SET --exist не укорачивал свежую
+	// запись (mt-9g7, часть C).
+	refreshTimeout uint32
+	ipset          *IPSet
+	nh             *Helper
+	mark           uint32
+	table          int
+	ip4Rule        *netlink.Rule
+	ip6Rule        *netlink.Rule
+	ip4Route       *netlink.Route
+	ip6Route       *netlink.Route
 }
 
 func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
@@ -85,6 +90,27 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 	err = ipt.RegisterChainOverride("mangle", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to create mangle chain: %w", err)
+	}
+
+	// ipset-refresh: при КАЖДОМ НОВОМ соединении к IP, уже лежащему в сете,
+	// продлеваем его запись на refreshTimeout секунд. Закрывает разрыв «клиент
+	// коннектится чаще, чем переспрашивает DNS»: без этого ipset остыл бы между
+	// DNS-запросами и новый SYN ушёл бы direct мимо прокси (mt-9g7, часть C).
+	//
+	// ТОЛЬКО ctstate NEW: per-packet SET-target на line-rate заметно ест CPU в
+	// software-path. SET неterminating — пакет продолжает путь к UDP-правилам ниже
+	// (для established трафика это правило не матчится: он не NEW). Правило первым
+	// в цепочке, покрывает и TCP, и UDP (mangle идёт до nat REDIRECT). Мёртвую
+	// (истёкшую) запись не воскрешает — match по сету не срабатывает.
+	if r.refreshTimeout > 0 {
+		err = ipt.Append("mangle", r.chainName,
+			"-m", "conntrack", "--ctstate", "NEW",
+			"-m", "set", "--match-set", ipsetName, "dst",
+			"-j", "SET", "--add-set", ipsetName, "dst", "--exist", "--timeout", strconv.Itoa(int(r.refreshTimeout)),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to append ipset-refresh rule: %w", err)
+		}
 	}
 
 	// DIVERT: established UDP TPROXY connections get marked and accepted
@@ -370,6 +396,8 @@ func (r *IPSetToTProxy) enable() error {
 	ensureKernelModule("xt_socket")
 	ensureKernelModule("nft_tproxy")
 	ensureKernelModule("nft_socket")
+	// ipset-refresh правило использует `-m conntrack --ctstate NEW`.
+	ensureKernelModule("xt_conntrack")
 
 	if err := checkTProxyAvailable(); err != nil {
 		return err
@@ -464,12 +492,13 @@ func (r *IPSetToTProxy) LinkUpHook(_ netlink.LinkUpdate) error {
 	return nil
 }
 
-func (nh *Helper) IPSetToTProxy(name string, port uint16, ipset *IPSet) *IPSetToTProxy {
+func (nh *Helper) IPSetToTProxy(name string, port uint16, ipset *IPSet, refreshTimeout uint32) *IPSetToTProxy {
 	return &IPSetToTProxy{
-		nh:        nh,
-		chainName: nh.ChainPrefix + name,
-		port:      port,
-		ipset:     ipset,
-		startIdx:  nh.StartIdx,
+		nh:             nh,
+		chainName:      nh.ChainPrefix + name,
+		port:           port,
+		ipset:          ipset,
+		startIdx:       nh.StartIdx,
+		refreshTimeout: refreshTimeout,
 	}
 }

@@ -104,8 +104,26 @@ stop() {
     COUNTER=`expr $COUNTER + 1`
   done
 
+  # Если процесс не уложился в LIMIT (graceful teardown iptables/ipset под
+  # нагрузкой может выйти за это время) - добиваем SIGKILL. Без этого restart()
+  # ниже вызовет start() поверх ещё живого, но уже обречённого процесса: start()
+  # увидит его в pidof, решит что "already running" и не поднимет замену -
+  # а через несколько секунд старый процесс всё равно умрёт сам, оставив демон
+  # мёртвым насовсем (mt-cub, инцидент 2026-07-26 при opkg-деплое).
+  if [ -n "`pidof $PROC`" ]; then
+    logger "$DESC did not stop within ${LIMIT}s, sending SIGKILL."
+    killall -9 $PROC 2>/dev/null
+    COUNTER=0
+    KILL_LIMIT=5
+    while [ -n "`pidof $PROC`" -a "$COUNTER" -le "$KILL_LIMIT" ]; do
+      sleep 1;
+      COUNTER=`expr $COUNTER + 1`
+    done
+  fi
+
   if [ -n "`pidof $PROC`" ]; then
     echo -e "            $ansi_red failed. $ansi_std"
+    logger "Failed to stop $DESC even after SIGKILL."
     return 255
   else
     echo -e "            $ansi_green done. $ansi_std"

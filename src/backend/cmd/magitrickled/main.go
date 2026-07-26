@@ -28,6 +28,21 @@ func getPIDPath(pid int) (string, error) {
 	return os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 }
 
+// normalizeExePath убирает суффикс " (deleted)", которым ядро помечает
+// /proc/<pid>/exe, когда файл на диске был заменён (unlink+create/rename)
+// уже ПОСЛЕ того как процесс с ним заэкзекался — ровно так opkg кладёт новый
+// бинарник поверх ещё живого демона. Без нормализации ещё живой старый
+// процесс перестаёт опознаваться как "тот же бинарник".
+func normalizeExePath(p string) string {
+	return strings.TrimSuffix(p, " (deleted)")
+}
+
+// sameBinary сравнивает базовые имена двух путей к исполняемому файлу
+// (см. normalizeExePath) — так же, как это дальше делает checkPIDFile.
+func sameBinary(a, b string) bool {
+	return path.Base(normalizeExePath(a)) == path.Base(normalizeExePath(b))
+}
+
 func checkPIDFile() (int, error) {
 	data, err := os.ReadFile(constant.PIDPath)
 	if err != nil {
@@ -44,7 +59,7 @@ func checkPIDFile() (int, error) {
 
 	currPID, _ := getPIDPath(os.Getpid())
 	filePID, _ := getPIDPath(pid)
-	if path.Base(currPID) == path.Base(filePID) {
+	if sameBinary(currPID, filePID) {
 		return pid, nil
 	}
 

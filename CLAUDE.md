@@ -20,7 +20,7 @@ bd close <id>         # Complete work
 
 - Prefer `bd` for cross-session task tracking with dependencies/blockers
 - Run `bd prime` for detailed command reference
-- Commit/push only when the developer asks — do not auto-push at session end
+- Commit freely and proactively as work progresses — push to remote only when the developer explicitly asks
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/SYNC_CONCEPTS.md for details and anti-patterns.
 <!-- END BEADS INTEGRATION -->

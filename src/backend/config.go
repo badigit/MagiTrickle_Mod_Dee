@@ -184,6 +184,9 @@ func (a *App) ImportConfig(cfg config.Config) error {
 			if cfg.App.DNSProxy.ClientTTLCap != nil {
 				a.config.DNSProxy.ClientTTLCap = *cfg.App.DNSProxy.ClientTTLCap
 			}
+			if cfg.App.DNSProxy.PersistCache != nil {
+				a.config.DNSProxy.PersistCache = *cfg.App.DNSProxy.PersistCache
+			}
 		}
 
 		if cfg.App.Netfilter != nil {
@@ -411,6 +414,7 @@ func (a *App) ExportConfig() config.Config {
 				MaxConcurrent:   &a.config.DNSProxy.MaxConcurrent,
 				Timeout:         func(u uint) *uint { return &u }(uint(a.config.DNSProxy.Timeout.Milliseconds())),
 				ClientTTLCap:    &a.config.DNSProxy.ClientTTLCap,
+				PersistCache:    &a.config.DNSProxy.PersistCache,
 			},
 			Netfilter: &config.Netfilter{
 				IPTables: &config.IPTables{

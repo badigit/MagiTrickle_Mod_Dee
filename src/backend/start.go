@@ -63,20 +63,27 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}()
 
 	a.recordsCache = recordsCache.New()
-	// Загружаем снапшот кэша с прошлого запуска ДО bringUpRouting: group.Sync
-	// наполнит ipset из recordsCache без единого сетевого запроса (автопрогрев
-	// после старта/обновления). Закрывает деградацию «рестарт демона опустошает
-	// ipset при живых клиентских кэшах» (mt-pqa).
-	if err := a.recordsCache.Load(recordsCacheSnapshotLocation); err != nil {
-		log.Warn().Err(err).Msg("failed to load records cache snapshot")
-	} else {
-		log.Info().Int("domains", len(a.recordsCache.ListKnownDomains())).Msg("records cache snapshot loaded")
+	// Персист снапшота на диск (mt-pqa) — ВЫКЛЮЧЕН по умолчанию (mt-0cf).
+	// При ClientTTLCap>0 ipset и так самовосстанавливается за ClientTTLCap
+	// секунд при любой потере (не только рестарте), а после планового рестарта
+	// пользователь обычно ждёт чистый старт, а не подхват старого состояния.
+	// Персист даёт лишь мгновенность при рестарте ценой постоянных записей на
+	// флеш — включается явно через dnsProxy.persistCache в конфиге.
+	if a.config.DNSProxy.PersistCache {
+		if err := a.recordsCache.Load(recordsCacheSnapshotLocation); err != nil {
+			log.Warn().Err(err).Msg("failed to load records cache snapshot")
+		} else {
+			log.Info().Int("domains", len(a.recordsCache.ListKnownDomains())).Msg("records cache snapshot loaded")
+		}
 	}
 	a.recordsCache.StartCleanup(ctx, 30*time.Second)
-	// На диск пишем только домены, релевантные правилам (+ цели их CNAME-цепочек,
-	// это делает SnapshotFiltered): кэш держит ВСЕ резолвы LAN, но переживать
-	// рестарт им незачем — ipset наполняется лишь по сматченным (mt-fnj).
-	a.recordsCache.StartPersist(ctx, 5*time.Minute, recordsCacheSnapshotLocation, a.isPersistableDomain)
+	if a.config.DNSProxy.PersistCache {
+		// На диск пишем только домены, релевантные правилам (+ цели их CNAME-
+		// цепочек, это делает SnapshotFiltered): кэш держит ВСЕ резолвы LAN, но
+		// переживать рестарт им незачем — ipset наполняется лишь по сматченным
+		// (mt-fnj).
+		a.recordsCache.StartPersist(ctx, 5*time.Minute, recordsCacheSnapshotLocation, a.isPersistableDomain)
+	}
 
 	nfh, err := netfilterTools.New(a.config.Netfilter.IPTables.ChainPrefix, a.config.Netfilter.IPSet.TablePrefix, a.config.Netfilter.DisableIPv4, a.config.Netfilter.DisableIPv6, a.config.Netfilter.StartMarkTableIndex)
 	if err != nil {
@@ -165,14 +172,16 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}
 	defer func() { _ = a.bringDownRouting() }()
 
-	// Финальный синхронный флеш снапшота — ЗДЕСЬ, а не рядом со StartPersist:
-	// defer'ы идут LIFO, поэтому эта регистрация (после bringDownRouting)
-	// выполняется ПЕРЕД ним, пока группы ещё включены. Иначе isPersistableDomain
-	// опирался бы на уже выключенные группы, отфильтровал бы всё и затёр снапшот
-	// пустым — так на проде 2026-07-26 потерялся весь накопленный прогрев
-	// (в самом Save на этот случай есть ещё и страховка от пустого слепка).
-	// Синхронно, потому что StartPersist-горутину на ctx.Done могут не дождаться.
-	defer func() { _, _ = a.recordsCache.Save(recordsCacheSnapshotLocation, a.isPersistableDomain) }()
+	if a.config.DNSProxy.PersistCache {
+		// Финальный синхронный флеш снапшота — ЗДЕСЬ, а не рядом со StartPersist:
+		// defer'ы идут LIFO, поэтому эта регистрация (после bringDownRouting)
+		// выполняется ПЕРЕД ним, пока группы ещё включены. Иначе isPersistableDomain
+		// опирался бы на уже выключенные группы, отфильтровал бы всё и затёр снапшот
+		// пустым — так на проде 2026-07-26 потерялся весь накопленный прогрев
+		// (в самом Save на этот случай есть ещё и страховка от пустого слепка).
+		// Синхронно, потому что StartPersist-горутину на ctx.Done могут не дождаться.
+		defer func() { _, _ = a.recordsCache.Save(recordsCacheSnapshotLocation, a.isPersistableDomain) }()
+	}
 
 	a.startSubscriptionSyncLoop(newCtx, errChan)
 	a.startStaticSubnetReassertLoop(newCtx)

@@ -37,6 +37,7 @@ type DNSProxy struct {
 	MaxConcurrent    *uint           `yaml:"maxConcurrent"`
 	Timeout          *uint           `yaml:"timeout"`
 	ClientTTLCap     *uint32         `yaml:"clientTTLCap"`
+	PersistCache     *bool           `yaml:"persistCache"`
 }
 
 type DNSProxyServer struct {

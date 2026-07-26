@@ -22,6 +22,7 @@ app:
     maxConcurrent: 100
     timeout: 5000
     clientTTLCap: 300
+    persistCache: false
   netfilter:
     iptables:
       chainPrefix: MT_

@@ -22,6 +22,10 @@ var DefaultAppConfig = models.AppConfig{
 		// баланс: запас против ipset-жизни (86400+) ~300×, самовосстановление
 		// после потери ipset ≤5 мин (ср. KVAS: max-ttl=3600 при тех же 86400).
 		ClientTTLCap: 300,
+		// Выключено по умолчанию (mt-0cf): при ClientTTLCap>0 ipset и так
+		// самовосстанавливается за ClientTTLCap секунд при любой потере, а
+		// после рестарта ожидаем чистый старт, а не подхват старого состояния.
+		PersistCache: false,
 	},
 	HTTPWeb: models.AppConfigHTTPWeb{
 		Enabled: true,

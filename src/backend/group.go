@@ -332,11 +332,10 @@ func (g *Group) sync() error {
 				}
 				domainAddresses := g.app.recordsCache.GetAddresses(domainName)
 				for _, address := range domainAddresses {
-					ttlDuration := address.Deadline.Sub(now).Seconds()
-					if ttlDuration <= 0 {
+					ttl, ok := ipsetTTLFromDeadline(address.Deadline.Sub(now))
+					if !ok {
 						continue
 					}
-					ttl := uint32(ttlDuration)
 					if len(address.Address) == net.IPv4len {
 						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address)}
 						if oldTTL, exists := newIPv4SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {

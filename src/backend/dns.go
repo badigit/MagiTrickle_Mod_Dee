@@ -255,7 +255,7 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 		Str("net", network).
 		Msg("processing A record")
 
-	ttlDuration := aRecord.Hdr.Ttl + a.config.Netfilter.IPSet.AdditionalTTL
+	ttlDuration := ipsetTTLFromRecord(aRecord.Hdr.Ttl, a.config.Netfilter.IPSet.AdditionalTTL)
 
 	a.recordsCache.AddAddress(domainName, aRecord.A, ttlDuration)
 
@@ -318,7 +318,7 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 		Str("net", network).
 		Msg("processing AAAA record")
 
-	ttlDuration := aaaaRecord.Hdr.Ttl + a.config.Netfilter.IPSet.AdditionalTTL
+	ttlDuration := ipsetTTLFromRecord(aaaaRecord.Hdr.Ttl, a.config.Netfilter.IPSet.AdditionalTTL)
 
 	a.recordsCache.AddAddress(domainName, aaaaRecord.AAAA, ttlDuration)
 
@@ -369,7 +369,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 		Str("net", network).
 		Msg("processing CNAME record")
 
-	ttlDuration := cNameRecord.Hdr.Ttl + a.config.Netfilter.IPSet.AdditionalTTL
+	ttlDuration := ipsetTTLFromRecord(cNameRecord.Hdr.Ttl, a.config.Netfilter.IPSet.AdditionalTTL)
 
 	a.recordsCache.AddAlias(domainName, targetName, ttlDuration)
 
@@ -390,11 +390,10 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 			Msg("added alias")
 
 		for _, address := range addresses {
-			ttlDuration := address.Deadline.Sub(now).Seconds()
-			if ttlDuration <= 0 {
+			ttl, ok := ipsetTTLFromDeadline(address.Deadline.Sub(now))
+			if !ok {
 				continue
 			}
-			ttl := uint32(ttlDuration)
 
 			if len(address.Address) == net.IPv4len {
 				subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address)}

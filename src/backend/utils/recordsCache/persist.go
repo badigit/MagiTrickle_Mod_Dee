@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -34,17 +35,82 @@ type Snapshot struct {
 	Aliases   map[string]snapshotAlias     `json:"aliases"`
 }
 
-// Snapshot собирает слепок под RLock. Маршалить/писать — уже вне лока.
+// Snapshot собирает полный слепок под RLock. Маршалить/писать — уже вне лока.
 func (r *Records) Snapshot() Snapshot {
 	r.locker.RLock()
 	defer r.locker.RUnlock()
 
+	return r.snapshotLocked(nil)
+}
+
+// SnapshotFiltered собирает слепок только тех доменов, для которых keep вернул
+// true, ПЛЮС транзитивных целей их CNAME-цепочек: адреса лежат в конце цепочки,
+// и без них загруженный снапшот не отдал бы по сматченному имени ни одного IP
+// (автопрогрев ipset оказался бы пустым). keep == nil → полный слепок.
+//
+// Смысл фильтра (mt-fnj): recordsCache хранит ВСЕ резолвы LAN, а на диск нужны
+// только домены, релевантные правилам — остальное переживает рестарт впустую
+// (на проде это было >95% снапшота). Отфильтрованное остаётся в памяти: оно
+// нужно для post-resolve subnet-правил и для CNAME-склейки.
+//
+// keep вызывается ВНЕ внутреннего лока — намеренно. Предикат ходит в конфиг
+// (searchDomain → cfgMu), а порядок «records.RLock → cfgMu» встречно
+// пересекается с ImportConfig (держит cfgMu.Lock и синхронизирует группы через
+// recordsCache) — при вклинившемся писателе кэша это классический дедлок.
+// Поэтому: сначала список имён (лок взят и отпущен), затем фильтрация без лока,
+// затем сборка под RLock. Кэш между шагами может измениться — для снапшота,
+// который и так пишется раз в несколько минут, это несущественно.
+func (r *Records) SnapshotFiltered(keep func(string) bool) Snapshot {
+	if keep == nil {
+		return r.Snapshot()
+	}
+
+	domains := r.ListKnownDomains()
+	want := make(map[string]struct{})
+	for _, domain := range domains {
+		if keep(domain) {
+			want[domain] = struct{}{}
+		}
+	}
+
+	r.locker.RLock()
+	defer r.locker.RUnlock()
+
+	// Дотягиваем цепочки CNAME вперёд: name → aliases[name].Alias → ...
+	for _, domain := range domains {
+		if _, ok := want[domain]; !ok {
+			continue
+		}
+		current := domain
+		for {
+			alias, ok := r.aliases[current]
+			if !ok {
+				break
+			}
+			if _, seen := want[alias.Alias]; seen {
+				break // уже собран (в т.ч. защита от циклов)
+			}
+			want[alias.Alias] = struct{}{}
+			current = alias.Alias
+		}
+	}
+
+	return r.snapshotLocked(want)
+}
+
+// snapshotLocked собирает слепок; want == nil означает «всё». Вызывать под RLock.
+func (r *Records) snapshotLocked(want map[string]struct{}) Snapshot {
 	snap := Snapshot{
 		Version:   snapshotVersion,
-		Addresses: make(map[string][]snapshotAddress, len(r.addresses)),
-		Aliases:   make(map[string]snapshotAlias, len(r.aliases)),
+		Addresses: make(map[string][]snapshotAddress),
+		Aliases:   make(map[string]snapshotAlias),
 	}
 	for name, addresses := range r.addresses {
+		if want != nil {
+			if _, ok := want[name]; !ok {
+				continue
+			}
+		}
 		out := make([]snapshotAddress, 0, len(addresses))
 		for _, addr := range addresses {
 			out = append(out, snapshotAddress{
@@ -57,6 +123,11 @@ func (r *Records) Snapshot() Snapshot {
 		}
 	}
 	for name, alias := range r.aliases {
+		if want != nil {
+			if _, ok := want[name]; !ok {
+				continue
+			}
+		}
 		snap.Aliases[name] = snapshotAlias{
 			Alias:    alias.Alias,
 			Deadline: alias.Deadline.Unix(),
@@ -102,9 +173,10 @@ func (r *Records) LoadSnapshot(snap Snapshot) {
 }
 
 // Save атомарно пишет снапшот в path (tmp+rename). Пишет только при dirty:
-// повторный вызов без изменений — no-op (бережём флеш). Возвращает true, если
-// запись реально произошла.
-func (r *Records) Save(path string) (bool, error) {
+// повторный вызов без изменений — no-op (бережём флеш). keep фильтрует, что
+// попадёт на диск (см. SnapshotFiltered); nil — сохранять всё. Возвращает true,
+// если запись реально произошла.
+func (r *Records) Save(path string, keep func(string) bool) (bool, error) {
 	if !r.dirty.Load() {
 		return false, nil
 	}
@@ -113,7 +185,19 @@ func (r *Records) Save(path string) (bool, error) {
 	// лишний прогон, не потеря данных).
 	r.dirty.Store(false)
 
-	snap := r.Snapshot()
+	snap := r.SnapshotFiltered(keep)
+
+	// Страховка: пустой слепок при непустом кэше — почти наверняка сбой предиката
+	// (например, Save вызван после teardown групп, и searchDomain уже ничего не
+	// матчит — так на проде 2026-07-26 был затёрт весь накопленный прогрев).
+	// Такой снапшот бесполезен, а старый файл ценен: отказываемся писать и
+	// возвращаем dirty, чтобы следующий Save попробовал снова.
+	if len(snap.Addresses) == 0 && len(snap.Aliases) == 0 && r.hasRecords() {
+		r.dirty.Store(true)
+		log.Warn().Msg("records cache snapshot came out empty while cache is not — refusing to overwrite")
+		return false, nil
+	}
+
 	data, err := json.Marshal(snap)
 	if err != nil {
 		r.dirty.Store(true)
@@ -126,7 +210,7 @@ func (r *Records) Save(path string) (bool, error) {
 		return false, fmt.Errorf("failed to create snapshot dir: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, ".records-cache-*.tmp")
+	tmp, err := os.CreateTemp(dir, snapshotTmpPattern+"*.tmp")
 	if err != nil {
 		r.dirty.Store(true)
 		return false, fmt.Errorf("failed to create temp snapshot: %w", err)
@@ -155,8 +239,40 @@ func (r *Records) Save(path string) (bool, error) {
 	return true, nil
 }
 
+// hasRecords сообщает, есть ли в кэше хоть что-то (без учёта истечения).
+func (r *Records) hasRecords() bool {
+	r.locker.RLock()
+	defer r.locker.RUnlock()
+
+	return len(r.addresses) > 0 || len(r.aliases) > 0
+}
+
+// snapshotTmpPattern — префикс временных файлов Save (tmp+rename).
+const snapshotTmpPattern = ".records-cache-"
+
+// cleanupOrphanTmp удаляет временные файлы, оставшиеся от прерванной записи
+// (процесс убит между CreateTemp и Rename — defer os.Remove тогда не отработал).
+// Вызывается из Load, т.е. один раз за жизнь процесса. Best-effort.
+func cleanupOrphanTmp(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasPrefix(name, snapshotTmpPattern) || !strings.HasSuffix(name, ".tmp") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			log.Debug().Err(err).Str("file", name).Msg("failed to remove orphan snapshot tmp")
+		}
+	}
+}
+
 // Load читает снапшот из path и наполняет кэш. Отсутствие файла — не ошибка.
 func (r *Records) Load(path string) error {
+	cleanupOrphanTmp(filepath.Dir(path))
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -180,8 +296,16 @@ func (r *Records) Load(path string) error {
 }
 
 // StartPersist запускает периодическую атомарную запись снапшота (только при
-// изменениях) и финальную запись на отмену ctx. Интервал большой (флеш-износ).
-func (r *Records) StartPersist(ctx context.Context, interval time.Duration, path string) {
+// изменениях). Интервал большой (флеш-износ). keep ограничивает состав снапшота
+// (см. SnapshotFiltered); nil — сохранять всё.
+//
+// На ctx.Done горутина просто выходит и НЕ пишет: финальный флеш делает
+// синхронный Save в defer у вызывающего (start.go). Иначе получается гонка —
+// наблюдалась на проде 2026-07-26: при SIGTERM эта горутина успевала сбросить
+// dirty и начать запись, синхронный defer из-за сброшенного флага пропускал
+// свой Save, а процесс завершался раньше, чем горутина доходила до rename. В
+// итоге снапшот не обновлялся вовсе, оставался только осиротевший .tmp.
+func (r *Records) StartPersist(ctx context.Context, interval time.Duration, path string, keep func(string) bool) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -189,13 +313,10 @@ func (r *Records) StartPersist(ctx context.Context, interval time.Duration, path
 		for {
 			select {
 			case <-ticker.C:
-				if _, err := r.Save(path); err != nil {
+				if _, err := r.Save(path, keep); err != nil {
 					log.Warn().Err(err).Msg("failed to persist records cache")
 				}
 			case <-ctx.Done():
-				if _, err := r.Save(path); err != nil {
-					log.Warn().Err(err).Msg("failed to persist records cache on shutdown")
-				}
 				return
 			}
 		}

@@ -73,10 +73,10 @@ func (a *App) Start(ctx context.Context) (err error) {
 		log.Info().Int("domains", len(a.recordsCache.ListKnownDomains())).Msg("records cache snapshot loaded")
 	}
 	a.recordsCache.StartCleanup(ctx, 30*time.Second)
-	a.recordsCache.StartPersist(ctx, 5*time.Minute, recordsCacheSnapshotLocation)
-	// Синхронный финальный флеш на выходе (SIGTERM-путь): гарантирует запись,
-	// даже если StartPersist-горутина не успеет отработать ctx.Done до выхода.
-	defer func() { _, _ = a.recordsCache.Save(recordsCacheSnapshotLocation) }()
+	// На диск пишем только домены, релевантные правилам (+ цели их CNAME-цепочек,
+	// это делает SnapshotFiltered): кэш держит ВСЕ резолвы LAN, но переживать
+	// рестарт им незачем — ipset наполняется лишь по сматченным (mt-fnj).
+	a.recordsCache.StartPersist(ctx, 5*time.Minute, recordsCacheSnapshotLocation, a.isPersistableDomain)
 
 	nfh, err := netfilterTools.New(a.config.Netfilter.IPTables.ChainPrefix, a.config.Netfilter.IPSet.TablePrefix, a.config.Netfilter.DisableIPv4, a.config.Netfilter.DisableIPv6, a.config.Netfilter.StartMarkTableIndex)
 	if err != nil {
@@ -165,6 +165,15 @@ func (a *App) Start(ctx context.Context) (err error) {
 	}
 	defer func() { _ = a.bringDownRouting() }()
 
+	// Финальный синхронный флеш снапшота — ЗДЕСЬ, а не рядом со StartPersist:
+	// defer'ы идут LIFO, поэтому эта регистрация (после bringDownRouting)
+	// выполняется ПЕРЕД ним, пока группы ещё включены. Иначе isPersistableDomain
+	// опирался бы на уже выключенные группы, отфильтровал бы всё и затёр снапшот
+	// пустым — так на проде 2026-07-26 потерялся весь накопленный прогрев
+	// (в самом Save на этот случай есть ещё и страховка от пустого слепка).
+	// Синхронно, потому что StartPersist-горутину на ctx.Done могут не дождаться.
+	defer func() { _, _ = a.recordsCache.Save(recordsCacheSnapshotLocation, a.isPersistableDomain) }()
+
 	a.startSubscriptionSyncLoop(newCtx, errChan)
 	a.startStaticSubnetReassertLoop(newCtx)
 
@@ -180,6 +189,18 @@ func (a *App) Start(ctx context.Context) (err error) {
 			return nil
 		}
 	}
+}
+
+// isPersistableDomain — предикат отбора для снапшота recordsCache: на диск идут
+// только имена, сматченные активными правилами. Цели их CNAME-цепочек добирает
+// сам SnapshotFiltered, поэтому здесь достаточно прямого совпадения.
+//
+// Побочный эффект осознан: домен, который сматчится ПОСЛЕ добавления правила
+// пользователем, в прошлом снапшоте отсутствует — его ipset-запись появится с
+// первым же резолвом (или по кнопке «Прогреть»), а не мгновенно после рестарта.
+func (a *App) isPersistableDomain(domain string) bool {
+	_, ok := a.searchDomain(domain)
+	return ok
 }
 
 // startStaticSubnetReassertLoop периодически ре-фиксирует permanent

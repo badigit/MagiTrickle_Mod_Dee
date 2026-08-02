@@ -242,26 +242,34 @@ func (a *App) startStaticSubnetReassertLoop(ctx context.Context) {
 	}()
 }
 
-func (a *App) ForceCommitIPTables() error {
+// ForceCommitIPTables переустанавливает наши правила. Вызывается по хуку
+// netfilter.d, то есть ровно после того, как прошивка переписала таблицу
+// целиком — самая гонкоопасная точка. Поэтому запись идёт с повтором и
+// перечитыванием состояния (mt-pfo): одна проигранная гонка иначе означала бы
+// отсутствие правил до СЛЕДУЮЩЕГО события, а его может не быть минутами.
+//
+// v6 коммитится даже если упал v4: семейства независимы, и потерять оба из-за
+// одного не нужно.
+func (a *App) ForceCommitIPTables(ctx context.Context) error {
 	if a.nfHelper == nil {
 		return nil
 	}
 
+	var errs []error
+
 	if a.nfHelper.IPTables4 != nil {
-		err := a.nfHelper.IPTables4.Commit()
-		if err != nil {
-			return fmt.Errorf("failed to commit iptables rules: %w", err)
+		if err := a.nfHelper.IPTables4.CommitWithRetry(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to commit iptables rules: %w", err))
 		}
 	}
 
 	if a.nfHelper.IPTables6 != nil {
-		err := a.nfHelper.IPTables6.Commit()
-		if err != nil {
-			return fmt.Errorf("failed to commit iptables rules: %w", err)
+		if err := a.nfHelper.IPTables6.CommitWithRetry(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("failed to commit ip6tables rules: %w", err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
 }
 
 func (a *App) setupLogging() {

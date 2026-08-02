@@ -54,9 +54,11 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 		Str("type", req.Type).
 		Str("table", req.Table).
 		Msg("received netfilter.d event")
-	err = h.app.ForceCommitIPTables()
-	if err != nil {
-		log.Error().Err(err).Msg("error fixing iptables after netfilter.d")
+	// Ошибку наружу не отдаём: вызывающий — shell-скрипт хука через socat, ему
+	// с ней делать нечего. Классификация и ретраи — внутри (mt-pfo); сюда
+	// ошибка доходит, только когда бюджет попыток исчерпан.
+	if err := h.app.ForceCommitIPTables(r.Context()); err != nil {
+		log.Warn().Err(err).Msg("failed to restore iptables rules after netfilter.d event")
 	}
 }
 

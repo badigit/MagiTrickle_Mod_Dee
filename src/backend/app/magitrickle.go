@@ -72,7 +72,7 @@ type Main interface {
 	AddSubscription(subscription *models.Subscription) error
 	RemoveSubscriptionByIndex(idx int)
 	RebuildSubscriptionGroups() error
-	ForceCommitIPTables() error
+	ForceCommitIPTables(ctx context.Context) error
 	SyncAllGroups()
 	DNSCapture() DNSCapturer
 	Start(ctx context.Context) (err error)

@@ -14,7 +14,24 @@ import (
 type FakeIPTables struct {
 	rules map[string]map[string][]Rule
 	proto Protocol
+
+	// restoreErrs — очередь ошибок, которые Restore вернёт вместо применения
+	// правил (по одной на вызов, до исчерпания). Моделирует гонку с ndm.
+	restoreErrs  []error
+	restoreCalls int
+	saveCalls    int
 }
+
+// FailRestore заставляет следующие len(errs) вызовов Restore вернуть эти ошибки
+// вместо применения правил. Последующие вызовы отрабатывают штатно.
+func (ipt *FakeIPTables) FailRestore(errs ...error) {
+	ipt.restoreErrs = append(ipt.restoreErrs, errs...)
+}
+
+// RestoreCalls / SaveCalls — счётчики обращений, чтобы тест мог проверить число
+// попыток и факт перечитывания состояния.
+func (ipt *FakeIPTables) RestoreCalls() int { return ipt.restoreCalls }
+func (ipt *FakeIPTables) SaveCalls() int    { return ipt.saveCalls }
 
 func NewFakeIPTables(proto Protocol) *FakeIPTables {
 	return &FakeIPTables{
@@ -61,6 +78,7 @@ func (ipt *FakeIPTables) Proto() Protocol {
 }
 
 func (ipt *FakeIPTables) Save() ([]byte, error) {
+	ipt.saveCalls++
 	buf := new(bytes.Buffer)
 
 	tableNames := make([]string, 0, len(ipt.rules))
@@ -104,6 +122,15 @@ func (ipt *FakeIPTables) Save() ([]byte, error) {
 }
 
 func (ipt *FakeIPTables) Restore(data []byte) error {
+	ipt.restoreCalls++
+	if len(ipt.restoreErrs) > 0 {
+		err := ipt.restoreErrs[0]
+		ipt.restoreErrs = ipt.restoreErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
+
 	lines := bytes.Split(data, []byte("\n"))
 	currentTable := ""
 	for _, line := range lines {

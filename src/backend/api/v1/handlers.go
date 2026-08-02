@@ -16,6 +16,7 @@ import (
 	"magitrickle/diagnostics"
 	"magitrickle/models"
 	"magitrickle/utils/intID"
+	"magitrickle/utils/netfilterTools"
 	"magitrickle/utils/updater"
 
 	"github.com/go-chi/chi/v5"
@@ -58,6 +59,33 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Error().Err(err).Msg("error fixing iptables after netfilter.d")
 	}
+}
+
+// GetClientRouting returns the source networks excluded from MagiTrickle.
+func (h *Handler) GetClientRouting(w http.ResponseWriter, _ *http.Request) {
+	utils.WriteJson(w, http.StatusOK, h.app.ClientRouting())
+}
+
+// PutClientRouting validates, atomically applies and persists client bypass.
+func (h *Handler) PutClientRouting(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[models.AppConfigClientRouting](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Mode != models.ClientRoutingModeExclude {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unsupported client routing mode %q", req.Mode))
+		return
+	}
+	if _, _, err := netfilterTools.NormalizeSourceNetworks(req.SourceNetworks); err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.app.SetClientRouting(req); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, h.app.ClientRouting())
 }
 
 // Warmup

@@ -105,6 +105,19 @@ func (a *App) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to clear iptables: %w", err)
 	}
 
+	normalizedBypass, err := a.nfHelper.SetupClientBypass(a.config.ClientRouting.SourceNetworks)
+	if err != nil {
+		return fmt.Errorf("failed to prepare client bypass: %w", err)
+	}
+	a.config.ClientRouting.SourceNetworks = normalizedBypass
+	// Registered before bringDownRouting's defer below, so LIFO teardown first
+	// removes all iptables references and only then destroys the ipsets.
+	defer func() {
+		if err := a.nfHelper.DestroyClientBypass(); err != nil {
+			log.Warn().Err(err).Msg("failed to destroy client bypass sets")
+		}
+	}()
+
 	// Subscribe to link updates BEFORE bringing routing up, otherwise an
 	// interface that comes online during the bring-up window would not
 	// trigger LinkUpHook and our route on it would never get installed.

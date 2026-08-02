@@ -33,6 +33,9 @@ func (r *PortRemap) insertIPTablesRules(ipt *iptables.IPTables) error {
 	if err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
 	}
+	if err := r.nh.appendClientBypassGuard(ipt, "nat", r.chainName); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
+	}
 
 	for _, addr := range r.addresses {
 		if !((ipt.Proto() == iptables.ProtocolIPv4 && len(addr.IP) == net.IPv4len) || (ipt.Proto() == iptables.ProtocolIPv6 && len(addr.IP) == net.IPv6len)) {

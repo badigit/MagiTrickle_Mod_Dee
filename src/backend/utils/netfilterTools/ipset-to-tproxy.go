@@ -65,6 +65,9 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 	if err != nil {
 		return fmt.Errorf("failed to create nat chain: %w", err)
 	}
+	if err := r.nh.appendClientBypassGuard(ipt, "nat", r.chainName); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
+	}
 
 	err = ipt.Append("nat", r.chainName,
 		"-p", "tcp",
@@ -90,6 +93,9 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 	err = ipt.RegisterChainOverride("mangle", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to create mangle chain: %w", err)
+	}
+	if err := r.nh.appendClientBypassGuard(ipt, "mangle", r.chainName); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
 	}
 
 	// ipset-refresh: при КАЖДОМ НОВОМ соединении к IP, уже лежащему в сете,

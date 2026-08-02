@@ -1,13 +1,19 @@
 package config
 
 type App struct {
-	Enabled           *bool      `yaml:"enabled"`
-	HTTPWeb           *HTTPWeb   `yaml:"httpWeb"`
-	DNSProxy          *DNSProxy  `yaml:"dnsProxy"`
-	Netfilter         *Netfilter `yaml:"netfilter"`
-	Link              *[]string  `yaml:"link"`
-	ShowAllInterfaces *bool      `yaml:"showAllInterfaces"`
-	LogLevel          *string    `yaml:"logLevel"`
+	Enabled           *bool          `yaml:"enabled"`
+	HTTPWeb           *HTTPWeb       `yaml:"httpWeb"`
+	DNSProxy          *DNSProxy      `yaml:"dnsProxy"`
+	ClientRouting     *ClientRouting `yaml:"clientRouting"`
+	Netfilter         *Netfilter     `yaml:"netfilter"`
+	Link              *[]string      `yaml:"link"`
+	ShowAllInterfaces *bool          `yaml:"showAllInterfaces"`
+	LogLevel          *string        `yaml:"logLevel"`
+}
+
+type ClientRouting struct {
+	Mode           *string   `yaml:"mode"`
+	SourceNetworks *[]string `yaml:"sourceNetworks"`
 }
 
 type HTTPWeb struct {

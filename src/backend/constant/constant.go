@@ -38,6 +38,10 @@ var DefaultAppConfig = models.AppConfig{
 		},
 		Skin: "default",
 	},
+	ClientRouting: models.AppConfigClientRouting{
+		Mode:           models.ClientRoutingModeExclude,
+		SourceNetworks: []string{},
+	},
 	Netfilter: models.AppConfigNetfilter{
 		IPTables: models.AppConfigIPTables{
 			ChainPrefix: "MT_",

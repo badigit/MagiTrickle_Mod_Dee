@@ -10,14 +10,15 @@ const API_BASE = "/api/v1";
 
 const INTERFACES: Interfaces = {
   interfaces: [
-    { id: "nwg0",      active: true,  ip: "10.0.0.2" },
-    { id: "longinterf",active: true,  ip: "10.8.0.1" },
-    { id: "eth1",      active: false, ip: undefined   },
-    { id: "wg0",       active: true,  ip: "10.10.0.1" },
+    { id: "nwg0", active: true, ip: "10.0.0.2" },
+    { id: "longinterf", active: true, ip: "10.8.0.1" },
+    { id: "eth1", active: false, ip: undefined },
+    { id: "wg0", active: true, ip: "10.10.0.1" },
   ],
 };
 
 const ALIASES: Record<string, string> = {};
+let CLIENT_ROUTING = { mode: "exclude" as const, source_networks: ["192.168.1.50"] };
 
 const DATA = JSON.parse(Deno.readTextFileSync("./dev/groups.json"));
 const SUBSCRIPTIONS: Subscription[] = [
@@ -175,6 +176,11 @@ app.get(`${API_BASE}/subscription/rules`, (c) => {
   return c.json({ rules });
 });
 app.get(`${API_BASE}/system/interfaces`, (c) => c.json(INTERFACES));
+app.get(`${API_BASE}/system/client-routing`, (c) => c.json(CLIENT_ROUTING));
+app.put(`${API_BASE}/system/client-routing`, async (c) => {
+  CLIENT_ROUTING = await c.req.json();
+  return c.json(CLIENT_ROUTING);
+});
 app.get(`${API_BASE}/system/interfaces/aliases`, (c) => c.json(ALIASES));
 app.post(`${API_BASE}/system/interfaces/aliases`, async (c) => {
   const body = await c.req.json();

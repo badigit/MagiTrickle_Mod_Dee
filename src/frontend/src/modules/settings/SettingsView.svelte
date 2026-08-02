@@ -15,11 +15,15 @@
   const RELOAD_DELAY_MS = 8000;
 
   type SystemInfo = { started_at: string; uptime_seconds: number };
+  type ClientRouting = { mode: "exclude"; source_networks: string[] };
 
   let busy = $state(false);
   let startedAt = $state<Date | null>(null);
   let now = $state(Date.now());
   let timer: ReturnType<typeof setInterval> | null = null;
+  let clientRoutingText = $state("");
+  let clientRoutingLoaded = $state(false);
+  let clientRoutingSaving = $state(false);
 
   let uptime = $derived.by(() => {
     if (!startedAt) return null;
@@ -54,8 +58,38 @@
     }
   }
 
+  async function loadClientRouting() {
+    try {
+      const config = await fetcher.get<ClientRouting>("/system/client-routing");
+      clientRoutingText = config.source_networks.join("\n");
+      clientRoutingLoaded = true;
+    } catch {
+      clientRoutingLoaded = false;
+    }
+  }
+
+  async function saveClientRouting() {
+    if (!clientRoutingLoaded || clientRoutingSaving) return;
+    clientRoutingSaving = true;
+    const sourceNetworks = clientRoutingText
+      .split(/[\n,]+/)
+      .map((value) => value.trim())
+      .filter(Boolean);
+    try {
+      const config = await fetcher.put<ClientRouting>("/system/client-routing", {
+        mode: "exclude",
+        source_networks: sourceNetworks,
+      });
+      clientRoutingText = config.source_networks.join("\n");
+      toast.success(t("Client bypass saved"));
+    } finally {
+      clientRoutingSaving = false;
+    }
+  }
+
   onMount(() => {
     loadInfo();
+    loadClientRouting();
     routing.load();
     timer = setInterval(() => (now = Date.now()), 1000);
   });
@@ -101,6 +135,28 @@
         onCheckedChange={onRoutingToggle}
         aria-label={t("MagiTrickle on/off")}
       />
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="client-routing">
+      <div class="info">
+        <h3>{t("Bypass MagiTrickle for clients")}</h3>
+        <p class="hint">{t("Client bypass hint")}</p>
+      </div>
+      <textarea
+        bind:value={clientRoutingText}
+        disabled={!clientRoutingLoaded || clientRoutingSaving}
+        placeholder={t("One IP address or CIDR per line")}
+        aria-label={t("Client bypass networks")}
+        spellcheck="false"
+      ></textarea>
+      <p class="warning">{t("Client bypass DHCP warning")}</p>
+      <div class="client-routing-actions">
+        <Button onclick={saveClientRouting} inactive={!clientRoutingLoaded || clientRoutingSaving}>
+          {clientRoutingSaving ? t("saving changes...") : t("Save Changes")}
+        </Button>
+      </div>
     </div>
   </section>
 
@@ -257,6 +313,46 @@
   .info {
     flex: 1;
     min-width: 0;
+  }
+
+  .client-routing {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  textarea {
+    box-sizing: border-box;
+    width: 100%;
+    min-height: 8rem;
+    resize: vertical;
+    border: 1px solid var(--border-light);
+    border-radius: 6px;
+    padding: 0.7rem 0.8rem;
+    background: var(--bg-2, rgba(0, 0, 0, 0.2));
+    color: var(--text);
+    font: 0.9rem/1.45 monospace;
+  }
+
+  textarea:focus {
+    outline: none;
+    border-color: var(--accent, var(--green));
+  }
+
+  textarea:disabled {
+    opacity: 0.6;
+  }
+
+  .warning {
+    margin: 0;
+    color: var(--orange, #c79030);
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  .client-routing-actions {
+    display: flex;
+    justify-content: flex-end;
   }
 
   h3 {

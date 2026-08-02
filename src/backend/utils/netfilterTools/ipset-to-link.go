@@ -69,6 +69,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		if err != nil {
 			return fmt.Errorf("failed to create chain: %w", err)
 		}
+		if err := r.nh.appendClientBypassGuard(ipt, "mangle", r.chainName); err != nil {
+			return fmt.Errorf("failed to append client bypass guard: %w", err)
+		}
 
 		err = ipt.Append("mangle", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "ACCEPT")
 		if err != nil {
@@ -86,6 +89,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		err = ipt.RegisterChainOverride("nat", r.chainName)
 		if err != nil {
 			return fmt.Errorf("failed to create nat chain: %w", err)
+		}
+		if err := r.nh.appendClientBypassGuard(ipt, "nat", r.chainName); err != nil {
+			return fmt.Errorf("failed to append client bypass guard: %w", err)
 		}
 
 		err = ipt.Append("nat", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "ACCEPT")
@@ -113,6 +119,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	if err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
 	}
+	if err := r.nh.appendClientBypassGuard(ipt, "filter", r.chainName); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
+	}
 
 	if r.ifaceName != Blackhole {
 		err = ipt.Append("filter", r.chainName, "-o", r.ifaceName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "ACCEPT")
@@ -133,6 +142,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	err = ipt.RegisterChainOverride("mangle", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
+	}
+	if err := r.nh.appendClientBypassGuard(ipt, "mangle", r.chainName); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
 	}
 
 	// MARK routes the packet to this group's table; save-mark persists the
@@ -167,6 +179,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	err = ipt.RegisterChainOverride("nat", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
+	}
+	if err := r.nh.appendClientBypassGuard(ipt, "nat", r.chainName); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
 	}
 
 	err = ipt.Append("nat", r.chainName, "-m", "set", "--match-set", ipsetName, "dst", "-j", "MASQUERADE")

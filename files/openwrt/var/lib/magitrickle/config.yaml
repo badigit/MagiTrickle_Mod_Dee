@@ -1,4 +1,4 @@
-configVersion: 0.1.3
+configVersion: 0.1.4
 app:
   httpWeb:
     enabled: true
@@ -23,6 +23,9 @@ app:
     timeout: 5000
     clientTTLCap: 300
     persistCache: false
+  clientRouting:
+    mode: exclude
+    sourceNetworks: []
   netfilter:
     iptables:
       chainPrefix: MT_

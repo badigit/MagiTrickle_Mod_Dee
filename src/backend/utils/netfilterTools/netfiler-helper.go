@@ -27,6 +27,9 @@ type Helper struct {
 	// last, so its lifecycle can't be owned by any individual group.
 	preambleMu   sync.Mutex
 	preambleRefs int
+
+	clientBypassMu    sync.Mutex
+	clientBypassReady bool
 }
 
 // acquireInterfacePreamble ensures the shared mangle PREROUTING preamble is
@@ -97,6 +100,9 @@ func (nh *Helper) installInterfacePreamble(ipt *iptables.IPTables) error {
 
 	if err := ipt.RegisterChainOverride("mangle", chain); err != nil {
 		return fmt.Errorf("failed to create preamble chain: %w", err)
+	}
+	if err := nh.appendClientBypassGuard(ipt, "mangle", chain); err != nil {
+		return fmt.Errorf("failed to append client bypass guard: %w", err)
 	}
 	// --ctdir ORIGINAL is CRITICAL: connmark is one value for both directions
 	// of a connection, but the group routing table holds only a default route

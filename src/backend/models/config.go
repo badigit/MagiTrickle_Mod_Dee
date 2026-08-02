@@ -6,10 +6,18 @@ type AppConfig struct {
 	Enabled           bool
 	HTTPWeb           AppConfigHTTPWeb
 	DNSProxy          AppConfigDNSProxy
+	ClientRouting     AppConfigClientRouting
 	Netfilter         AppConfigNetfilter
 	Link              []string
 	ShowAllInterfaces bool
 	LogLevel          string
+}
+
+const ClientRoutingModeExclude = "exclude"
+
+type AppConfigClientRouting struct {
+	Mode           string   `json:"mode"`
+	SourceNetworks []string `json:"source_networks"`
 }
 
 type AppConfigHTTPWeb struct {

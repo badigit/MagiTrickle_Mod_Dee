@@ -4,12 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"magitrickle/config"
 	"magitrickle/constant"
 	"magitrickle/models"
+	"magitrickle/utils/netfilterTools"
 
 	"github.com/dlclark/regexp2"
 	"gopkg.in/yaml.v3"
@@ -100,6 +102,8 @@ func (a *App) ImportConfig(cfg config.Config) error {
 	// ImportConfig вызывается и в рантайме (SIGHUP-релоад, main.go) → мутации групп/
 	// подписок должны идти под эксклюзивным cfgMu (mt-6q1). Не зовёт SaveConfig/
 	// searchDomain → реентранси-дедлока нет.
+	a.clientRoutingMu.Lock()
+	defer a.clientRoutingMu.Unlock()
 	a.cfgMu.Lock()
 	defer a.cfgMu.Unlock()
 
@@ -186,6 +190,34 @@ func (a *App) ImportConfig(cfg config.Config) error {
 			}
 			if cfg.App.DNSProxy.PersistCache != nil {
 				a.config.DNSProxy.PersistCache = *cfg.App.DNSProxy.PersistCache
+			}
+		}
+
+		if cfg.App.ClientRouting != nil {
+			mode := a.config.ClientRouting.Mode
+			if cfg.App.ClientRouting.Mode != nil {
+				mode = *cfg.App.ClientRouting.Mode
+			}
+			if mode != models.ClientRoutingModeExclude {
+				return fmt.Errorf("unsupported client routing mode %q", mode)
+			}
+			sourceNetworks := a.config.ClientRouting.SourceNetworks
+			if cfg.App.ClientRouting.SourceNetworks != nil {
+				sourceNetworks = *cfg.App.ClientRouting.SourceNetworks
+			}
+			normalized, _, err := netfilterTools.NormalizeSourceNetworks(sourceNetworks)
+			if err != nil {
+				return err
+			}
+			if a.nfHelper != nil {
+				normalized, err = a.nfHelper.UpdateClientBypass(normalized)
+				if err != nil {
+					return fmt.Errorf("failed to update client bypass: %w", err)
+				}
+			}
+			a.config.ClientRouting = models.AppConfigClientRouting{
+				Mode:           mode,
+				SourceNetworks: normalized,
 			}
 		}
 
@@ -375,7 +407,7 @@ func (a *App) ExportConfig() config.Config {
 	}
 
 	return config.Config{
-		ConfigVersion: "0.1.3",
+		ConfigVersion: "0.1.4",
 		App: &config.App{
 			Enabled: &a.config.Enabled,
 			HTTPWeb: &config.HTTPWeb{
@@ -415,6 +447,13 @@ func (a *App) ExportConfig() config.Config {
 				Timeout:         func(u uint) *uint { return &u }(uint(a.config.DNSProxy.Timeout.Milliseconds())),
 				ClientTTLCap:    &a.config.DNSProxy.ClientTTLCap,
 				PersistCache:    &a.config.DNSProxy.PersistCache,
+			},
+			ClientRouting: &config.ClientRouting{
+				Mode: &a.config.ClientRouting.Mode,
+				SourceNetworks: func() *[]string {
+					values := slices.Clone(a.config.ClientRouting.SourceNetworks)
+					return &values
+				}(),
 			},
 			Netfilter: &config.Netfilter{
 				IPTables: &config.IPTables{

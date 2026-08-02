@@ -69,7 +69,8 @@ type App struct {
 
 	// cfgMu сериализует все мутации конфига (группы/правила/подписки) и
 	// защищает lock-free чтения датапаса. См. app_config_lock.go.
-	cfgMu sync.RWMutex
+	cfgMu           sync.RWMutex
+	clientRoutingMu sync.Mutex
 }
 
 // New создаёт новый экземпляр App
@@ -381,6 +382,56 @@ func (a *App) StartedAt() time.Time {
 // traffic (DnsOverrider + groups enabled).
 func (a *App) IsRoutingActive() bool {
 	return a.routingActive.Load()
+}
+
+func (a *App) ClientRouting() models.AppConfigClientRouting {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
+	return models.AppConfigClientRouting{
+		Mode:           a.config.ClientRouting.Mode,
+		SourceNetworks: slices.Clone(a.config.ClientRouting.SourceNetworks),
+	}
+}
+
+// SetClientRouting atomically replaces the kernel sets, then persists the
+// canonical configuration. New connections observe the new selection without
+// rebuilding iptables; existing conntrack/NAT sessions are intentionally not
+// rewritten.
+func (a *App) SetClientRouting(cfg models.AppConfigClientRouting) error {
+	a.clientRoutingMu.Lock()
+	defer a.clientRoutingMu.Unlock()
+
+	if cfg.Mode != models.ClientRoutingModeExclude {
+		return fmt.Errorf("unsupported client routing mode %q", cfg.Mode)
+	}
+
+	a.cfgMu.Lock()
+	old := models.AppConfigClientRouting{
+		Mode:           a.config.ClientRouting.Mode,
+		SourceNetworks: slices.Clone(a.config.ClientRouting.SourceNetworks),
+	}
+	normalized, _, err := netfilterTools.NormalizeSourceNetworks(cfg.SourceNetworks)
+	if err == nil && a.nfHelper != nil {
+		normalized, err = a.nfHelper.UpdateClientBypass(normalized)
+	}
+	if err != nil {
+		a.cfgMu.Unlock()
+		return err
+	}
+	a.config.ClientRouting = models.AppConfigClientRouting{Mode: cfg.Mode, SourceNetworks: normalized}
+	a.cfgMu.Unlock()
+
+	if err := a.SaveConfig(); err != nil {
+		a.cfgMu.Lock()
+		rollbackErr := error(nil)
+		if a.nfHelper != nil {
+			_, rollbackErr = a.nfHelper.UpdateClientBypass(old.SourceNetworks)
+		}
+		a.config.ClientRouting = old
+		a.cfgMu.Unlock()
+		return errors.Join(err, rollbackErr)
+	}
+	return nil
 }
 
 // bringUpRouting enables DNS port-remap and all routing groups, syncs IPSet

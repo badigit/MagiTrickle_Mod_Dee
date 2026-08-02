@@ -80,6 +80,8 @@ type Main interface {
 	StartedAt() time.Time
 	IsRoutingActive() bool
 	SetEnabled(enabled bool) error
+	ClientRouting() models.AppConfigClientRouting
+	SetClientRouting(cfg models.AppConfigClientRouting) error
 	// Warmup ре-резолвит имена из recordsCache, сматченные активными правилами,
 	// через штатный DNS-путь → наполняет ipset. Ручной прогон после простоя.
 	Warmup(ctx context.Context) (WarmupResult, error)

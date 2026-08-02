@@ -50,19 +50,17 @@ func TestDirectInsertUsesAccept(t *testing.T) {
 
 		rules := fake.GetRules(table, "MT_DIRECT")
 		want := [][]string{
+			{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 			{"-m", "set", "--match-set", "mt_direct_4", "dst", "-j", "ACCEPT"},
 		}
 		if !reflect.DeepEqual(rules, want) {
 			t.Errorf("%s/MT_DIRECT rules mismatch.\nWant: %v\nGot:  %v", table, want, rules)
 		}
 
-		// Explicit regression guard: the bypass target must never be RETURN.
-		for _, rule := range rules {
-			for _, arg := range rule {
-				if arg == "RETURN" {
-					t.Errorf("%s/MT_DIRECT must not use RETURN (fall-through no-op); got %v", table, rule)
-				}
-			}
+		// Destination-direct must remain ACCEPT. The preceding source bypass is
+		// intentionally RETURN so ordinary router processing can continue.
+		if got := rules[len(rules)-1][len(rules[len(rules)-1])-1]; got != "ACCEPT" {
+			t.Errorf("%s/MT_DIRECT destination rule must use ACCEPT, got %q", table, got)
 		}
 
 		// PREROUTING must jump to our chain, excluding loopback.
@@ -123,12 +121,20 @@ func TestInterfaceGroupChainTerminatesWithAccept(t *testing.T) {
 
 	rules := fake.GetRules("mangle", "MT_GRP")
 	want := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 		{"-m", "set", "--match-set", "mt_grp_4", "dst", "-j", "MARK", "--set-mark", "100"},
 		{"-m", "set", "--match-set", "mt_grp_4", "dst", "-j", "CONNMARK", "--save-mark"},
 		{"-m", "set", "--match-set", "mt_grp_4", "dst", "-j", "ACCEPT"},
 	}
 	if !reflect.DeepEqual(rules, want) {
 		t.Errorf("mangle/MT_GRP rules mismatch.\nWant: %v\nGot:  %v", want, rules)
+	}
+	guard := []string{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"}
+	for _, table := range []string{"filter", "nat"} {
+		got := fake.GetRules(table, "MT_GRP")
+		if len(got) == 0 || !reflect.DeepEqual(got[0], guard) {
+			t.Errorf("%s/MT_GRP must start with client bypass guard, got %v", table, got)
+		}
 	}
 }
 
@@ -154,6 +160,7 @@ func TestInterfacePreambleLifecycle(t *testing.T) {
 	// с восстановленной маркой уехал бы в ip rule fwmark -> таблицу группы, где
 	// есть только default via групповой iface, — обратно в туннель вместо клиента.
 	wantChain := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 		{"-m", "conntrack", "--ctdir", "ORIGINAL", "-j", "CONNMARK", "--restore-mark"},
 		{"-m", "mark", "!", "--mark", "0x0", "-j", "ACCEPT"},
 	}
@@ -288,6 +295,7 @@ func TestDirectInsertIPv6(t *testing.T) {
 	for _, table := range []string{"mangle", "nat"} {
 		rules := fake.GetRules(table, "MT_DIRECT6")
 		want := [][]string{
+			{"-m", "set", "--match-set", "client_bypass_6", "src", "-j", "RETURN"},
 			{"-m", "set", "--match-set", "mt_direct_6", "dst", "-j", "ACCEPT"},
 		}
 		if !reflect.DeepEqual(rules, want) {

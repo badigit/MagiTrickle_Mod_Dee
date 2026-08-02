@@ -49,6 +49,7 @@ func TestInsertIPTablesRulesIPv4(t *testing.T) {
 	}
 	natRules := fake.GetRules("nat", "MT_TEST")
 	expectedNat := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "REDIRECT", "--to-port", "5001"},
 	}
 	if !reflect.DeepEqual(natRules, expectedNat) {
@@ -70,6 +71,7 @@ func TestInsertIPTablesRulesIPv4(t *testing.T) {
 	}
 	mangleRules := fake.GetRules("mangle", "MT_TEST")
 	expectedMangle := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "ACCEPT"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "100/100"},
@@ -119,6 +121,7 @@ func TestInsertIPTablesRulesIPv6(t *testing.T) {
 	// NAT chain: TCP REDIRECT with _6 suffix
 	natRules := fake.GetRules("nat", "MT_V6")
 	expectedNat := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_6", "src", "-j", "RETURN"},
 		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_6", "dst", "-j", "REDIRECT", "--to-port", "5001"},
 	}
 	if !reflect.DeepEqual(natRules, expectedNat) {
@@ -128,6 +131,7 @@ func TestInsertIPTablesRulesIPv6(t *testing.T) {
 	// Mangle chain: UDP TPROXY with _6 suffix
 	mangleRules := fake.GetRules("mangle", "MT_V6")
 	expectedMangle := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_6", "src", "-j", "RETURN"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_6", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "200/200"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_6", "dst", "-m", "socket", "-j", "ACCEPT"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_6", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "200/200"},
@@ -284,6 +288,7 @@ func TestInsertIPTablesRulesRefresh(t *testing.T) {
 
 	mangleRules := fake.GetRules("mangle", "MT_TEST")
 	expectedMangle := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 		{"-m", "conntrack", "--ctstate", "NEW", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "SET", "--add-set", "mt_test_4", "dst", "--exist", "--timeout", "86400"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "ACCEPT"},
@@ -296,6 +301,7 @@ func TestInsertIPTablesRulesRefresh(t *testing.T) {
 	// NAT-цепочка (TCP REDIRECT) не должна меняться правилом продления.
 	natRules := fake.GetRules("nat", "MT_TEST")
 	expectedNat := [][]string{
+		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
 		{"-p", "tcp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "REDIRECT", "--to-port", "5001"},
 	}
 	if !reflect.DeepEqual(natRules, expectedNat) {

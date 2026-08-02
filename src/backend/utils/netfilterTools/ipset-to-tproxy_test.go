@@ -336,13 +336,19 @@ func TestRefreshExcludesStaticSubnets(t *testing.T) {
 			ipt.RegisterChainPatch("nat", "PREROUTING")
 			ipt.RegisterChainPatch("mangle", "PREROUTING")
 
+			nh := &Helper{}
+			if tc.proto == iptables.ProtocolIPv4 {
+				nh.IPTables4 = ipt
+			} else {
+				nh.IPTables6 = ipt
+			}
 			r := &IPSetToTProxy{
 				chainName:      tc.chain,
 				port:           5001,
 				mark:           100,
 				table:          100,
 				ipset:          &IPSet{ipsetName: "mt_test"},
-				nh:             &Helper{IPTables4: ipt},
+				nh:             nh,
 				refreshTimeout: 86400,
 			}
 

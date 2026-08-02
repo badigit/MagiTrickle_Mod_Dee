@@ -243,7 +243,7 @@ func (r *IPSet) SyncStaticSubnets(v4 []IPv4Subnet, v6 []IPv6Subnet) error {
 	}
 	have4, err := listSubnets4(r.StaticSetName4())
 	if err != nil {
-		errs = append(errs, fmt.Errorf("failed to list static mirror: %w", err))
+		errs = append(errs, fmt.Errorf("failed to list static mirror %s: %w", r.StaticSetName4(), err))
 	}
 	for subnet := range want4 {
 		if _, ok := have4[subnet]; ok {
@@ -276,7 +276,7 @@ func (r *IPSet) SyncStaticSubnets(v4 []IPv4Subnet, v6 []IPv6Subnet) error {
 	}
 	have6, err := listSubnets6(r.StaticSetName6())
 	if err != nil {
-		errs = append(errs, fmt.Errorf("failed to list static mirror: %w", err))
+		errs = append(errs, fmt.Errorf("failed to list static mirror %s: %w", r.StaticSetName6(), err))
 	}
 	for subnet := range want6 {
 		if _, ok := have6[subnet]; ok {

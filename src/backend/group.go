@@ -301,56 +301,7 @@ func (g *Group) sync() error {
 			Msg("group sync completed")
 	}()
 
-	now := time.Now()
-	newIPv4SubnetList := make(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout)
-	newIPv6SubnetList := make(map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout)
-
-	// Статические subnet-правила — permanent-записи (timeout=0). Парсинг вынесен
-	// в staticSubnetsFromRules, чтобы переиспользовать в ReassertStaticSubnets.
-	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
-	g.updateStaticHostCache(v4Static, v6Static)
-	for _, subnet := range v4Static {
-		newIPv4SubnetList[subnet] = nil
-	}
-	for _, subnet := range v6Static {
-		newIPv6SubnetList[subnet] = nil
-	}
-
-	knownDomains := g.app.recordsCache.ListKnownDomains()
-	for _, domain := range g.Rules {
-		if !domain.IsEnabled() {
-			continue
-		}
-		switch domain.Type {
-		case models.RuleTypeSubnet, models.RuleTypeSubnet6:
-			// собраны выше через staticSubnetsFromRules
-
-		default:
-			for _, domainName := range knownDomains {
-				if !domain.IsMatch(domainName) {
-					continue
-				}
-				domainAddresses := g.app.recordsCache.GetAddresses(domainName)
-				for _, address := range domainAddresses {
-					ttl, ok := ipsetTTLFromDeadline(address.Deadline.Sub(now))
-					if !ok {
-						continue
-					}
-					if len(address.Address) == net.IPv4len {
-						subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address)}
-						if oldTTL, exists := newIPv4SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {
-							newIPv4SubnetList[subnet] = &ttl
-						}
-					} else if len(address.Address) == net.IPv6len {
-						subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address)}
-						if oldTTL, exists := newIPv6SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {
-							newIPv6SubnetList[subnet] = &ttl
-						}
-					}
-				}
-			}
-		}
-	}
+	newIPv4SubnetList, newIPv6SubnetList := g.desiredSubnets(time.Now())
 
 	oldIPv4SubnetList, err := g.listIPv4Subnets()
 	if err != nil {
@@ -431,6 +382,64 @@ func (g *Group) sync() error {
 	}
 
 	return nil
+}
+
+// desiredSubnets собирает целевое состояние ipset-сетов группы на момент now:
+// статические subnet-правила (permanent-записи, timeout=nil) плюс
+// DNS-производные host-записи из recordsCache с остаточным TTL. Попутно
+// обновляет кэш статических host-членов. Вызывать под g.locker.
+func (g *Group) desiredSubnets(now time.Time) (map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout, map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout) {
+	newIPv4SubnetList := make(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout)
+	newIPv6SubnetList := make(map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout)
+
+	// Статические subnet-правила — permanent-записи (timeout=0). Парсинг вынесен
+	// в staticSubnetsFromRules, чтобы переиспользовать в ReassertStaticSubnets.
+	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
+	g.updateStaticHostCache(v4Static, v6Static)
+	for _, subnet := range v4Static {
+		newIPv4SubnetList[subnet] = nil
+	}
+	for _, subnet := range v6Static {
+		newIPv6SubnetList[subnet] = nil
+	}
+
+	knownDomains := g.app.recordsCache.ListKnownDomains()
+	for _, domain := range g.Rules {
+		if !domain.IsEnabled() {
+			continue
+		}
+		switch domain.Type {
+		case models.RuleTypeSubnet, models.RuleTypeSubnet6:
+			// собраны выше через staticSubnetsFromRules
+
+		default:
+			for _, domainName := range knownDomains {
+				if !domain.IsMatch(domainName) {
+					continue
+				}
+				domainAddresses := g.app.recordsCache.GetAddresses(domainName)
+				for _, address := range domainAddresses {
+					ttl, ok := ipsetTTLFromDeadline(address.Deadline.Sub(now))
+					if !ok {
+						continue
+					}
+					if len(address.Address) == net.IPv4len {
+						subnet := netfilterTools.IPv4Host([4]byte(address.Address))
+						if oldTTL, exists := newIPv4SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {
+							newIPv4SubnetList[subnet] = &ttl
+						}
+					} else if len(address.Address) == net.IPv6len {
+						subnet := netfilterTools.IPv6Host([16]byte(address.Address))
+						if oldTTL, exists := newIPv6SubnetList[subnet]; !exists || (oldTTL != nil && ttl > *oldTTL) {
+							newIPv6SubnetList[subnet] = &ttl
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return newIPv4SubnetList, newIPv6SubnetList
 }
 
 // staticSubnetsFromRules собирает включённые subnet/subnet6-правила в виде

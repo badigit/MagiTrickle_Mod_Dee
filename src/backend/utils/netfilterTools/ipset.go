@@ -25,9 +25,25 @@ func (subnet IPv4Subnet) String() string {
 	}
 }
 
+// IPv4Host — канонический ключ одиночного IP (host-записи) в hash:net: явный
+// /32. Ядро при листинге ВСЕГДА отдаёт IPSET_ATTR_CIDR (hash_net4_data_list,
+// безусловный nla_put_u8 — одинаково в v3.10 и master), даже если запись
+// добавлялась с CIDR=0, поэтому ключ с CIDR=0 никогда не совпадёт с листингом —
+// все места, сравнивающие ключи со списком из ListIPv4Subnets, обязаны
+// строить host-записи через этот конструктор (mt-bku).
+func IPv4Host(addr [4]byte) IPv4Subnet {
+	return IPv4Subnet{Address: addr, CIDR: 32}
+}
+
 type IPv6Subnet struct {
 	Address [16]byte
 	CIDR    uint8
+}
+
+// IPv6Host — канонический ключ одиночного IPv6 (host-записи): явный /128.
+// См. IPv4Host.
+func IPv6Host(addr [16]byte) IPv6Subnet {
+	return IPv6Subnet{Address: addr, CIDR: 128}
 }
 
 func (subnet IPv6Subnet) String() string {
@@ -155,9 +171,15 @@ func (r *IPSet) ListIPv4Subnets() (map[IPv4Subnet]IPSetTimeout, error) {
 		if len(entry.IP) != net.IPv4len {
 			continue
 		}
+		cidr := entry.CIDR
+		// Защита от нашего же CIDR=0-канона: hash:net всегда отдаёт CIDR, но
+		// если атрибута вдруг нет (другой тип сета / другое ядро) — это host.
+		if cidr == 0 {
+			cidr = 32
+		}
 		subnet := IPv4Subnet{
 			Address: [4]byte(entry.IP),
-			CIDR:    entry.CIDR,
+			CIDR:    cidr,
 		}
 		if entry.Timeout != nil && *entry.Timeout == 0 {
 			addresses[subnet] = nil
@@ -187,9 +209,14 @@ func (r *IPSet) ListIPv6Subnets() (map[IPv6Subnet]IPSetTimeout, error) {
 		if len(entry.IP) != net.IPv6len {
 			continue
 		}
+		cidr := entry.CIDR
+		// См. ListIPv4Subnets: отсутствующий CIDR = host-запись.
+		if cidr == 0 {
+			cidr = 128
+		}
 		subnet := IPv6Subnet{
 			Address: [16]byte(entry.IP),
-			CIDR:    entry.CIDR,
+			CIDR:    cidr,
 		}
 		if entry.Timeout != nil && *entry.Timeout == 0 {
 			addresses[subnet] = nil

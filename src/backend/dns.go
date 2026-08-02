@@ -266,7 +266,7 @@ func (a *App) processARecord(aRecord dns.A, idStr, clientAddrStr, network string
 			continue
 		}
 
-		subnet := netfilterTools.IPv4Subnet{Address: [4]byte(aRecord.A)}
+		subnet := netfilterTools.IPv4Host([4]byte(aRecord.A))
 		if err := group.AddIPv4Subnet(subnet, &ttlDuration); err != nil {
 			log.Error().
 				Err(err).
@@ -329,7 +329,7 @@ func (a *App) processAAAARecord(aaaaRecord dns.AAAA, idStr, clientAddrStr, netwo
 			continue
 		}
 
-		subnet := netfilterTools.IPv6Subnet{Address: [16]byte(aaaaRecord.AAAA)}
+		subnet := netfilterTools.IPv6Host([16]byte(aaaaRecord.AAAA))
 		if err := group.AddIPv6Subnet(subnet, &ttlDuration); err != nil {
 			log.Error().
 				Err(err).
@@ -396,7 +396,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 			}
 
 			if len(address.Address) == net.IPv4len {
-				subnet := netfilterTools.IPv4Subnet{Address: [4]byte(address.Address)}
+				subnet := netfilterTools.IPv4Host([4]byte(address.Address))
 				if err := group.AddIPv4Subnet(subnet, &ttl); err != nil {
 					log.Error().
 						Err(err).
@@ -409,7 +409,7 @@ func (a *App) processCNameRecord(cNameRecord dns.CNAME, idStr, clientAddrStr, ne
 					Str("cNameDomain", alias).
 					Msg("added subnet")
 			} else if len(address.Address) == net.IPv6len {
-				subnet := netfilterTools.IPv6Subnet{Address: [16]byte(address.Address)}
+				subnet := netfilterTools.IPv6Host([16]byte(address.Address))
 				if err := group.AddIPv6Subnet(subnet, &ttl); err != nil {
 					log.Error().
 						Err(err).

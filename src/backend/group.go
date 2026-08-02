@@ -309,6 +309,14 @@ func (g *Group) sync() error {
 	// в staticSubnetsFromRules, чтобы переиспользовать в ReassertStaticSubnets.
 	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
 	g.updateStaticHostCache(v4Static, v6Static)
+	if err := g.ipset.SyncStaticSubnets(v4Static, v6Static); err != nil {
+		// Не фатально: зеркало влияет только на ipset-refresh (mt-bq8), а не на
+		// маршрутизацию. Хуже расхождение, чем прерванный sync всей группы.
+		log.Error().
+			Err(err).
+			Str("group", g.Name).
+			Msg("failed to sync static-subnet mirror")
+	}
 	for _, subnet := range v4Static {
 		newIPv4SubnetList[subnet] = nil
 	}
@@ -569,6 +577,12 @@ func (g *Group) ReassertStaticSubnets() error {
 	v4, v6 := staticSubnetsFromRules(g.Rules)
 	g.updateStaticHostCache(v4, v6)
 	var errs []error
+	// Зеркало статических подсетей держим в актуальном состоянии здесь же: у
+	// route-all групп без подписок sync() почти не вызывается, а зеркало —
+	// единственная защита от раздувания сета мусорными /32 (mt-bq8).
+	if err := g.ipset.SyncStaticSubnets(v4, v6); err != nil {
+		errs = append(errs, fmt.Errorf("failed to sync static-subnet mirror: %w", err))
+	}
 	for _, subnet := range v4 {
 		if err := g.addIPv4Subnet(subnet, nil); err != nil {
 			errs = append(errs, fmt.Errorf("failed to reassert %s: %w", subnet.String(), err))

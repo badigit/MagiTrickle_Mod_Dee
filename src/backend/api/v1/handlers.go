@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -54,10 +55,19 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 		Str("type", req.Type).
 		Str("table", req.Table).
 		Msg("received netfilter.d event")
-	// Ошибку наружу не отдаём: вызывающий — shell-скрипт хука через socat, ему
-	// с ней делать нечего. Классификация и ретраи — внутри (mt-pfo); сюда
-	// ошибка доходит, только когда бюджет попыток исчерпан.
-	if err := h.app.ForceCommitIPTables(r.Context()); err != nil {
+	// НЕ r.Context(): socat из хука ndm отправляет запрос и сразу закрывает
+	// соединение, поэтому контекст запроса отменяется раньше, чем мы успеваем
+	// применить правила — iptables-save убивается на старте, и правила не
+	// восстанавливаются вовсе. Проверено на проде: "iptables-save cancelled:
+	// context canceled" через 0.7 мс после события.
+	//
+	// Восстановление правил не принадлежит жизненному циклу HTTP-запроса: оно
+	// должно доработать независимо от того, дождался ли вызывающий ответа.
+	//
+	// Ошибку наружу не отдаём: вызывающему shell-скрипту с ней делать нечего.
+	// Классификация и ретраи — внутри (mt-pfo); сюда ошибка доходит, только
+	// когда бюджет попыток исчерпан.
+	if err := h.app.ForceCommitIPTables(context.Background()); err != nil {
 		log.Warn().Err(err).Msg("failed to restore iptables rules after netfilter.d event")
 	}
 }

@@ -2,6 +2,7 @@ package iptables
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -79,6 +80,14 @@ func IsRacedError(err error) bool {
 	return false
 }
 
+// IsRetryableError — стоит ли повторять попытку. Помимо проигранной гонки сюда
+// входит собственный таймаут внешней команды (mt-7sa): залипание почти всегда
+// вызвано чужим xtables.lock, то есть это та же гонка, только проявившаяся
+// зависанием, а не ошибкой.
+func IsRetryableError(err error) bool {
+	return IsRacedError(err) || errors.Is(err, ErrExecTimeout)
+}
+
 // CommitWithRetry применяет накопленные правила, повторяя попытку, если запись
 // не удалась. Каждая попытка — это полноценный Commit, то есть состояние ядра
 // перечитывается заново: повторять запись со старой дельтой бессмысленно, она
@@ -100,7 +109,7 @@ func (ipt *IPTables) CommitWithRetry(ctx context.Context) error {
 			return err
 		}
 
-		lastErr = ipt.Commit()
+		lastErr = ipt.CommitContext(ctx)
 		if lastErr == nil {
 			if attempt > 0 {
 				log.Debug().
@@ -112,7 +121,13 @@ func (ipt *IPTables) CommitWithRetry(ctx context.Context) error {
 		}
 
 		event := log.Warn()
-		if IsRacedError(lastErr) {
+		switch {
+		case errors.Is(lastErr, ErrExecTimeout):
+			// Не «сделали неверно», а «не сделали вовсе»: команда залипла и была
+			// убита. Ретраим, но на виду — молчать об этом нельзя, иначе
+			// диагностика «почему правила не вернулись» упрётся в тишину.
+			event = log.Warn().Bool("exec_timeout", true)
+		case IsRacedError(lastErr):
 			// Ожидаемо: прошивка переписала таблицу под нами.
 			event = log.Debug()
 		}

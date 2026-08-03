@@ -2,6 +2,7 @@ package iptables
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -28,6 +29,9 @@ type IPTables struct {
 	rules      map[string]map[string]chain
 	executable Executable
 	sync       sync.RWMutex
+
+	// commitMu сериализует коммиты между собой. См. CommitContext.
+	commitMu sync.Mutex
 }
 
 func NewIPTables(executable Executable) *IPTables {
@@ -108,9 +112,13 @@ func (ipt *IPTables) Delete(table, chain string, ruleArgs ...string) error {
 }
 
 func (ipt *IPTables) GetCurrentRules() (map[string]map[string][]Rule, error) {
+	return ipt.getCurrentRules(context.Background())
+}
+
+func (ipt *IPTables) getCurrentRules(ctx context.Context) (map[string]map[string][]Rule, error) {
 	rules := make(map[string]map[string][]Rule)
 
-	data, err := ipt.executable.Save()
+	data, err := ipt.executable.Save(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +213,22 @@ func splitFields(data []byte) [][]byte {
 	return fields
 }
 
-func (ipt *IPTables) Commit() (err error) {
+// Commit применяет накопленные правила с фоновым контекстом. Потолок времени на
+// каждый внешний вызов задаётся execTimeout независимо от переданного контекста.
+func (ipt *IPTables) Commit() error {
+	return ipt.CommitContext(context.Background())
+}
+
+// CommitContext — то же, но с внешним контекстом: он прерывает и iptables-save,
+// и iptables-restore. Нужен там, где проход может стать неактуальным на лету
+// (остановка демона, приход нового события netfilter.d).
+func (ipt *IPTables) CommitContext(ctx context.Context) (err error) {
+	// commitMu сериализует весь цикл «прочитать состояние -> вычислить дельту ->
+	// применить». Без него два коммита читают один снимок ядра и пишут дельты от
+	// него же. Берётся ДО ipt.sync, обратный порядок заводить нельзя.
+	ipt.commitMu.Lock()
+	defer ipt.commitMu.Unlock()
+
 	ipt.sync.RLock()
 	defer ipt.sync.RUnlock()
 
@@ -226,7 +249,7 @@ func (ipt *IPTables) Commit() (err error) {
 		logEvent.Dur("elapsed_ms", elapsed).Str("type", iptType).Bytes("buf", buf.Bytes()).Msg("iptables commit")
 	}()
 
-	curRules, err := ipt.GetCurrentRules()
+	curRules, err := ipt.getCurrentRules(ctx)
 	if err != nil {
 		return err
 	}
@@ -322,5 +345,5 @@ func (ipt *IPTables) Commit() (err error) {
 		return nil
 	}
 
-	return ipt.executable.Restore(buf.Bytes())
+	return ipt.executable.Restore(ctx, buf.Bytes())
 }

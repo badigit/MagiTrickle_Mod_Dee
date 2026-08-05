@@ -2,6 +2,8 @@ package magitrickle
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -123,9 +125,11 @@ func (c *netfilterCommitter) setMode(m committerMode) {
 	}
 }
 
-// stop переводит коммиттер в stopping, отменяет worker и ДОЖДАВШИСЬ его
-// возвращается. Идемпотентен: вызывается и явно перед снятием правил, и
-// defer'ом на ранних выходах из Start.
+// stop отменяет контекст worker'а и ДОЖДАВШИСЬ его завершения возвращается.
+// В committerStopping НЕ переводит — setMode(committerStopping) нигде не
+// вызывается, worker завершается по отмене контекста (см. run: ctx.Done()).
+// Идемпотентен: вызывается и явно перед снятием правил, и defer'ом на ранних
+// выходах из Start.
 func (c *netfilterCommitter) stop() {
 	c.stopOnce.Do(func() {
 		c.cancel()
@@ -149,6 +153,10 @@ func (c *netfilterCommitter) run(ctx context.Context) {
 
 		case cmd := <-c.cmds:
 			switch cmd.mode {
+			case committerStarting:
+				// Возврат в starting не предусмотрен переходами режима, но
+				// если он всё же придёт — защёлку трогать не нужно: она уже
+				// либо снята, либо копит событие для будущего ready.
 			case committerPaused, committerStopping:
 				// Правила снимаются намеренно: ни защёлка, ни страховочный
 				// проход, ни УЖЕ ЛЕЖАЩЕЕ В ОЧЕРЕДИ событие не должны их
@@ -201,7 +209,7 @@ func (c *netfilterCommitter) run(ctx context.Context) {
 		default:
 		}
 
-		if err := c.commit(ctx, c.wake); err != nil {
+		if err := c.runPass(ctx); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
@@ -210,4 +218,19 @@ func (c *netfilterCommitter) run(ctx context.Context) {
 			reconcile = time.After(c.reconcileDelay)
 		}
 	}
+}
+
+// runPass изолирует панику: worker живёт в собственной горутине, и без
+// recover любая паника внутри коммита валит весь демон. Раньше её
+// перехватывал net/http, потому что коммит шёл в HTTP-обработчике.
+// Паника становится обычной ошибкой прохода — дальше её подхватит
+// страховочный таймер.
+func (c *netfilterCommitter) runPass(ctx context.Context) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic in netfilter commit: %v", r)
+			log.Error().Str("stack", string(debug.Stack())).Msg("recovered panic in netfilter committer")
+		}
+	}()
+	return c.commit(ctx, c.wake)
 }

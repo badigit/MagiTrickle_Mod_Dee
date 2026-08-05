@@ -525,10 +525,7 @@ func (a *App) SetEnabled(enabled bool) error {
 	if saveErr != nil {
 		log.Error().Err(saveErr).Msg("failed to persist app.enabled")
 	}
-	if err := errors.Join(bringDownErr, saveErr); err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(bringDownErr, saveErr)
 }
 
 // Restart spawns a detached shell that calls the platform restart command

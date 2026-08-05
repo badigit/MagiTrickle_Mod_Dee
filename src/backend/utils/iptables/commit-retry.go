@@ -88,25 +88,47 @@ func IsRetryableError(err error) bool {
 	return IsRacedError(err) || errors.Is(err, ErrExecTimeout)
 }
 
-// CommitWithRetry применяет накопленные правила, повторяя попытку, если запись
-// не удалась. Каждая попытка — это полноценный Commit, то есть состояние ядра
-// перечитывается заново: повторять запись со старой дельтой бессмысленно, она
-// ляжет так же криво.
-//
-// Возвращает ошибку последней попытки, если бюджет исчерпан, и ошибку контекста,
-// если его отменили.
 func (ipt *IPTables) CommitWithRetry(ctx context.Context) error {
+	return ipt.CommitWithRetryWake(ctx, nil)
+}
+
+// CommitWithRetryWake — то же, что CommitWithRetry, но пауза между попытками
+// слушает ещё и канал wake. Событие из него означает «состояние ядра снова
+// изменилось»: продолжать текущий проход бессмысленно, потому что дельта
+// считалась от устаревшего снимка. Поэтому проход начинается ЗАНОВО с полным
+// бюджетом попыток. Busy-loop это не создаёт — частота ограничена частотой
+// событий netfilter.d.
+//
+// wake == nil допустим: nil-канал в select никогда не готов, поведение
+// совпадает с прежним.
+func (ipt *IPTables) CommitWithRetryWake(ctx context.Context, wake <-chan struct{}) error {
+	for {
+		err, restarted := ipt.commitRetryPass(ctx, wake)
+		if !restarted {
+			return err
+		}
+		log.Debug().
+			Str("type", protoName(ipt.Proto())).
+			Msg("iptables commit restarted by a new netfilter event")
+	}
+}
+
+// commitRetryPass — один проход по бюджету попыток. Второе значение true
+// означает, что проход прерван событием из wake и должен начаться заново.
+func (ipt *IPTables) commitRetryPass(ctx context.Context, wake <-chan struct{}) (error, bool) {
 	var lastErr error
 
 	for attempt, delay := range commitRetryBackoff {
 		if delay > 0 {
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return ctx.Err(), false
+			case <-wake:
+				return nil, true
 			case <-time.After(delay):
 			}
 		} else if err := ctx.Err(); err != nil {
-			return err
+			return err, false
 		}
 
 		lastErr = ipt.CommitContext(ctx)
@@ -117,7 +139,7 @@ func (ipt *IPTables) CommitWithRetry(ctx context.Context) error {
 					Str("type", protoName(ipt.Proto())).
 					Msg("iptables commit succeeded after retry")
 			}
-			return nil
+			return nil, false
 		}
 
 		event := log.Warn()
@@ -138,7 +160,7 @@ func (ipt *IPTables) CommitWithRetry(ctx context.Context) error {
 			Msg("iptables commit failed, retrying")
 	}
 
-	return fmt.Errorf("iptables commit failed after %d attempts: %w", len(commitRetryBackoff), lastErr)
+	return fmt.Errorf("iptables commit failed after %d attempts: %w", len(commitRetryBackoff), lastErr), false
 }
 
 func protoName(proto Protocol) string {

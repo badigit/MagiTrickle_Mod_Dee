@@ -97,6 +97,15 @@ func (ipt *FakeIPTables) ChainExists(table, chain string) bool {
 	return exists
 }
 
+// DropChain удаляет цепочку целиком — так выглядит перезапись таблицы
+// прошивкой Keenetic со стороны нашей модели.
+func (ipt *FakeIPTables) DropChain(table, chain string) {
+	if ipt.rules[table] == nil {
+		return
+	}
+	delete(ipt.rules[table], chain)
+}
+
 func (ipt *FakeIPTables) Proto() Protocol {
 	return ipt.proto
 }

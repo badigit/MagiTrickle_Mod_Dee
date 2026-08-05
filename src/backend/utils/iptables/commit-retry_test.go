@@ -211,3 +211,70 @@ func TestIsRacedError(t *testing.T) {
 		})
 	}
 }
+
+// TestCommitWithRetryWakeRestartsOnEvent: событие, пришедшее во время паузы
+// между попытками, прекращает ожидание и начинает проход ЗАНОВО — с полным
+// бюджетом попыток. Смысл: дельта считалась от снимка, который уже устарел,
+// поэтому продолжать старый проход бессмысленно.
+func TestCommitWithRetryWakeRestartsOnEvent(t *testing.T) {
+	ipt, fake := newRetryFixture(t)
+
+	saved := commitRetryBackoff
+	commitRetryBackoff = []time.Duration{0, time.Hour, time.Hour}
+	t.Cleanup(func() { commitRetryBackoff = saved })
+
+	fake.FailRestore(errors.New(racedStderr))
+
+	wake := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		wake <- struct{}{}
+	}()
+
+	start := time.Now()
+	if err := ipt.CommitWithRetryWake(context.Background(), wake); err != nil {
+		t.Fatalf("CommitWithRetryWake failed: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("ожидание не прервано событием, прошло %v", elapsed)
+	}
+	if got := fake.RestoreCalls(); got != 2 {
+		t.Errorf("Restore calls = %d, want 2 (провал + проход после рестарта)", got)
+	}
+}
+
+// TestCommitWithRetryWakeNilChannelBehavesAsBefore: nil-канал в select никогда
+// не готов, поэтому прежнее поведение сохраняется дословно.
+func TestCommitWithRetryWakeNilChannelBehavesAsBefore(t *testing.T) {
+	withFastRetries(t)
+	ipt, fake := newRetryFixture(t)
+
+	fake.FailRestore(errors.New(racedStderr), errors.New(racedStderr))
+
+	if err := ipt.CommitWithRetryWake(context.Background(), nil); err != nil {
+		t.Fatalf("CommitWithRetryWake failed: %v", err)
+	}
+	if got := fake.RestoreCalls(); got != 3 {
+		t.Errorf("Restore calls = %d, want 3", got)
+	}
+}
+
+// TestCommitWithRetryWakeContextWinsOverWake: отменённый контекст важнее
+// события — во время остановки писать в netfilter нельзя.
+func TestCommitWithRetryWakeContextWinsOverWake(t *testing.T) {
+	withFastRetries(t)
+	ipt, fake := newRetryFixture(t)
+
+	wake := make(chan struct{}, 1)
+	wake <- struct{}{}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := ipt.CommitWithRetryWake(ctx, wake); !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got: %v", err)
+	}
+	if got := fake.RestoreCalls(); got != 0 {
+		t.Errorf("Restore calls = %d, want 0", got)
+	}
+}

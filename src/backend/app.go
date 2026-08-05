@@ -448,7 +448,11 @@ func (a *App) bringDownRouting() error {
 		return nil
 	}
 	err := a.tearDownRouting()
-	log.Info().Msg("routing brought down")
+	if err != nil {
+		log.Warn().Err(err).Msg("routing brought down incompletely: some iptables chains may still be active")
+	} else {
+		log.Info().Msg("routing brought down")
+	}
 	return err
 }
 
@@ -488,17 +492,28 @@ func (a *App) SetEnabled(enabled bool) error {
 		return nil
 	}
 
+	var bringDownErr error
 	if enabled {
 		if err := a.bringUpRouting(); err != nil {
 			return err
 		}
 	} else {
-		_ = a.bringDownRouting()
+		bringDownErr = a.bringDownRouting()
 	}
 
+	// Намерение пользователя фиксируется в конфиге безусловно, даже если
+	// снятие роутинга выше не удалось (bringDownErr != nil). Пользователь
+	// попросил выключить — если не сохранить это намерение, после
+	// перезапуска демон снова поднимет роутинг, который просили снять.
+	// Ошибка снятия при этом не глотается: она возвращается вызывающему
+	// вместе с возможной ошибкой SaveConfig, чтобы HTTP-обработчик не
+	// ответил 200 OK при частично снятых iptables-цепочках.
 	a.config.Enabled = enabled
-	if err := a.SaveConfig(); err != nil {
-		log.Error().Err(err).Msg("failed to persist app.enabled")
+	saveErr := a.SaveConfig()
+	if saveErr != nil {
+		log.Error().Err(saveErr).Msg("failed to persist app.enabled")
+	}
+	if err := errors.Join(bringDownErr, saveErr); err != nil {
 		return err
 	}
 	return nil

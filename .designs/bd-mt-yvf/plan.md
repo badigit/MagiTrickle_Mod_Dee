@@ -1042,7 +1042,11 @@ func (a *App) bringDownRouting() error {
 		return nil
 	}
 	err := a.tearDownRouting()
-	log.Info().Msg("routing brought down")
+	if err != nil {
+		log.Warn().Err(err).Msg("routing brought down incompletely: some rules may remain")
+	} else {
+		log.Info().Msg("routing brought down")
+	}
 	return err
 }
 
@@ -1073,7 +1077,7 @@ func (a *App) tearDownRouting() error {
 }
 ```
 
-- [ ] **Step 3: Сериализовать SetEnabled**
+- [ ] **Step 3: Сериализовать SetEnabled и не терять ошибку снятия**
 
 Заменить `SetEnabled` (строки 438–457) на:
 
@@ -1086,20 +1090,25 @@ func (a *App) SetEnabled(enabled bool) error {
 		return nil
 	}
 
+	var bringDownErr error
 	if enabled {
 		if err := a.bringUpRouting(); err != nil {
 			return err
 		}
 	} else {
-		_ = a.bringDownRouting()
+		bringDownErr = a.bringDownRouting()
 	}
 
+	// Намерение пользователя фиксируем ДАЖЕ при неудачном снятии: иначе после
+	// перезапуска демон снова поднимет роутинг, который просили выключить.
+	// Но саму ошибку не глотаем — иначе HTTP ответит 200 OK, хотя цепочки в
+	// ядре могли остаться.
 	a.config.Enabled = enabled
-	if err := a.SaveConfig(); err != nil {
-		log.Error().Err(err).Msg("failed to persist app.enabled")
-		return err
+	saveErr := a.SaveConfig()
+	if saveErr != nil {
+		log.Error().Err(saveErr).Msg("failed to persist app.enabled")
 	}
-	return nil
+	return errors.Join(bringDownErr, saveErr)
 }
 ```
 
@@ -1296,8 +1305,15 @@ func (a *App) RequestNetfilterCommit() {
 			// начнётся. Иначе он восстановил бы то, что снимает teardown.
 			a.committer.setMode(committerPaused)
 		}
-		_ = a.bringDownRouting()
+		bringDownErr = a.bringDownRouting()
 	}
+```
+
+**Внимание, зависимость от Task 3.** Ошибка снятия здесь ОБЯЗАНА сохраняться в
+`bringDownErr` и уходить вызывающему через `errors.Join` ниже по функции — это
+результат Task 3, где ревью нашло, что `_ = a.bringDownRouting()` отдаёт
+пользователю 200 OK при неполном снятии правил. Не заменяйте эту строку на
+`_ = ...`: получится молчаливый регресс.
 ```
 
 - [ ] **Step 6: Собрать и прогнать всё**

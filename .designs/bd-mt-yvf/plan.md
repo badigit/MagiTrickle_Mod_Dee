@@ -525,7 +525,11 @@ func TestCommitterDiscardsEventWhilePaused(t *testing.T) {
 	c.setMode(committerPaused)
 
 	c.request()
-	c.setMode(committerPaused) // синхронная точка: событие уже обработано и отброшено
+	// Переход в paused дренирует очередь внутри обработчика команды, поэтому
+	// после возврата setMode ожидающего события гарантированно нет. Одного
+	// лишь подтверждения команды было бы мало: select между cmds и req
+	// выбирает случайно, и событие пережило бы паузу.
+	c.setMode(committerPaused)
 	c.setMode(committerReady)
 
 	// теперь убеждаемся, что worker жив и работает, но старое событие не всплыло
@@ -548,8 +552,8 @@ func TestCommitterDropsLatchOnPause(t *testing.T) {
 	})
 
 	c.request()
-	c.setMode(committerStarting) // синхронная точка: событие защёлкнуто
-	c.setMode(committerPaused)
+	c.setMode(committerStarting) // подтверждение команды; событие уже защёлкнуто либо ещё в очереди
+	c.setMode(committerPaused)   // сбрасывает и защёлку, и очередь
 	c.setMode(committerReady)
 
 	c.request()
@@ -659,6 +663,12 @@ func TestCommitterSchedulesReconcileAfterFailure(t *testing.T) {
 // TestCommitterReconcileDoesNotSurvivePause: взведённый страховочный таймер не
 // должен выстрелить после ухода на паузу — иначе он вернёт правила, которые
 // teardown только что снял.
+//
+// Это единственная отрицательная проверка, где ожидание неизбежно: срабатывание
+// таймера наблюдаемо только по факту прохода, а его отсутствие — только по
+// времени. Риск ложно-зелёного принят осознанно и уменьшен запасом: ждём втрое
+// дольше задержки таймера. Наблюдаемого счётчика ради одного теста в
+// продакшн-код не добавляем.
 func TestCommitterReconcileDoesNotSurvivePause(t *testing.T) {
 	var passes atomic.Int32
 	failed := make(chan struct{})
@@ -810,12 +820,17 @@ func (c *netfilterCommitter) request() {
 // прохода уже не начнётся, иначе он вернул бы правила, которые снимает
 // teardown.
 //
-// Если worker уже мёртв, вызов просто возвращается.
+// Ожидание ack тоже слушает done: worker мог получить отмену контекста и выйти,
+// не подтвердив команду, — тогда ack не закроется никогда.
 func (c *netfilterCommitter) setMode(m committerMode) {
 	ack := make(chan struct{})
 	select {
 	case c.cmds <- committerCmd{mode: m, ack: ack}:
-		<-ack
+	case <-c.done:
+		return
+	}
+	select {
+	case <-ack:
 	case <-c.done:
 	}
 }
@@ -848,9 +863,16 @@ func (c *netfilterCommitter) run(ctx context.Context) {
 			switch cmd.mode {
 			case committerPaused, committerStopping:
 				// Правила снимаются намеренно: ни защёлка, ни страховочный
-				// проход не должны их вернуть.
+				// проход, ни УЖЕ ЛЕЖАЩЕЕ В ОЧЕРЕДИ событие не должны их
+				// вернуть. Очередь дренируем здесь: select выбирает между
+				// cmds и req случайно, поэтому «команда принята» само по себе
+				// не означает, что старое событие не всплывёт после resume.
 				latched = false
 				reconcile = nil
+				select {
+				case <-c.req:
+				default:
+				}
 			case committerReady:
 				if latched {
 					latched = false
@@ -866,6 +888,12 @@ func (c *netfilterCommitter) run(ctx context.Context) {
 
 		case <-reconcile:
 			reconcile = nil
+		}
+
+		// Отмена могла прийти одновременно с событием: select выбрал бы между
+		// ними случайно, и проход начался бы уже после остановки.
+		if ctx.Err() != nil {
+			return
 		}
 
 		switch mode {
@@ -964,15 +992,16 @@ func (a *App) bringUpRouting() error {
 
 	if a.dnsOverrider != nil {
 		if err := a.dnsOverrider.Enable(); err != nil {
-			a.rollbackFailedBringUp()
-			return fmt.Errorf("failed to override DNS: %w", err)
+			return errors.Join(fmt.Errorf("failed to override DNS: %w", err), a.rollbackFailedBringUp())
 		}
 	}
 
 	for _, group := range a.routingGroups() {
 		if err := group.Enable(); err != nil {
-			a.rollbackFailedBringUp()
-			return fmt.Errorf("failed to enable group %s: %w", group.Name, err)
+			return errors.Join(
+				fmt.Errorf("failed to enable group %s: %w", group.Name, err),
+				a.rollbackFailedBringUp(),
+			)
 		}
 		if err := group.Sync(); err != nil {
 			log.Warn().Err(err).Str("group", group.Name).Msg("group sync after enable returned error")
@@ -983,20 +1012,27 @@ func (a *App) bringUpRouting() error {
 	return nil
 }
 
-// rollbackFailedBringUp снимает то, что успело подняться до ошибки.
+// rollbackFailedBringUp снимает то, что успело подняться до ошибки, и
+// возвращает ошибку неполного отката.
 //
 // Без отката уже включённые группы остались бы с живыми цепочками при
 // routingActive=false: следующая перезапись таблиц прошивкой снесла бы их, а
 // коммиттер, находясь к тому моменту на паузе, событие отбросил бы — правила
 // исчезли бы молча, хотя группы считают себя включёнными.
-func (a *App) rollbackFailedBringUp() {
-	if err := a.tearDownRouting(); err != nil {
-		// Здесь уже нечего чинить: снять не удалось, и состояние ядра
-		// неизвестно. Сообщаем как есть — остатки подчистит CleanIPTables при
-		// следующем старте.
+//
+// Неполный откат НЕЛЬЗЯ выдавать за успех. Group.disable и PortRemap.disable
+// сбрасывают свой флаг enabled через defer даже когда снятие не удалось,
+// поэтому после ошибки объекты считают себя выключенными, а цепочки в ядре
+// могут остаться. Единственный честный ответ вызывающему — вернуть ошибку:
+// на старте она остановит запуск (состояние подчистит CleanIPTables при
+// следующем), в SetEnabled — дойдёт до пользователя, а не притворится паузой.
+func (a *App) rollbackFailedBringUp() error {
+	err := a.tearDownRouting()
+	a.routingActive.Store(false)
+	if err != nil {
 		log.Error().Err(err).Msg("rollback after failed routing bring-up was incomplete")
 	}
-	a.routingActive.Store(false)
+	return err
 }
 
 // bringDownRouting tears down dnsOverrider and disables all routing groups.
@@ -1192,8 +1228,15 @@ func (a *App) RequestNetfilterCommit() {
 	// при запуске коммиттера выше, по LIFO выполнится ПОЗЖЕ этого — поэтому
 	// stop вызывается явно здесь, а тот defer остаётся страховкой от ранних
 	// выходов. Повторный stop — no-op.
+	//
+	// lifecycleMu здесь обязателен: HTTP- и unix-серверы закрываются defer'ами,
+	// зарегистрированными ВЫШЕ, а значит по LIFO — уже ПОСЛЕ этого снятия.
+	// Без лока запрос SetEnabled(true) мог бы поднять правила обратно, когда
+	// коммиттер уже остановлен и восстанавливать их некому.
 	defer func() {
 		a.committer.stop()
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
 		_ = a.bringDownRouting()
 	}()
 ```
@@ -1333,7 +1376,17 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-- [ ] **Step 3: Собрать и прогнать всё**
+- [ ] **Step 3: Убрать осиротевший импорт**
+
+`context` в `src/backend/api/v1/handlers.go` использовался ТОЛЬКО в удалённой строке `ForceCommitIPTables(context.Background())`. Проверить и убрать из блока импортов, иначе сборка упадёт на `imported and not used`:
+
+```bash
+wsl -e bash -c 'cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && grep -n "context\." api/v1/handlers.go | head'
+```
+
+Если вывод пуст — удалить строку `"context"` из импортов `api/v1/handlers.go`.
+
+- [ ] **Step 4: Собрать и прогнать всё**
 
 ```bash
 wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
@@ -1341,7 +1394,7 @@ wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd 
 
 Ожидается: все пакеты `ok`.
 
-- [ ] **Step 4: Коммит**
+- [ ] **Step 5: Коммит**
 
 ```bash
 git add src/backend/api/v1/handlers.go src/backend/app/magitrickle.go
@@ -1364,12 +1417,22 @@ git commit -m "feat(netfilter): хук netfilter.d только сигналит
 **Interfaces:**
 - Consumes: собранный пакет со всеми предыдущими задачами.
 
-**Осторожно:** это рабочий роутер с 38 группами. Шаг 3 намеренно снимает правила, поэтому перед ним делается снимок, а после — сверка с ним. Если что-то пойдёт не так, правила возвращает `/opt/etc/init.d/S99magitrickle restart`.
+**Осторожно:** это рабочий роутер с 38 группами. Шаг 4 намеренно снимает правила, поэтому перед ним делается полный снимок, а после — сверка `diff` с ним. Если что-то пойдёт не так на любом шаге, правила возвращает:
+
+```bash
+ssh <ROUTER_SSH> '/opt/etc/init.d/S99magitrickle restart'
+```
+
+**Про имена цепочек.** Наивная маска `MT_[0-9a-f]*` НЕ годится: кроме групп `MT_<8 hex>` на роутере живут подписочные `MT_s<8 hex>`, `MT_DNSOR` (port remap) и потенциально `MT_PREAMBLE` (interface-режим). Проверено на проде 03.08.2026: mangle — 34 `MT_<hex>` и 4 `MT_s<hex>`, nat — те же плюс `MT_DNSOR`. Поэтому ниже имена берутся из вывода `iptables -S` целиком, а не по маске из hex.
+
+**Про схлопывание.** Автоматически на роутере оно НЕ проверяется: демон логирует в `/dev/null`, наблюдаемого счётчика проходов нет. Схлопывание покрыто юнит-тестом `TestCommitterFoldsRequests` (Task 2), а здесь проверяется лишь то, что серия событий не ломает итоговое состояние.
 
 - [ ] **Step 1: Собрать пакет**
 
+Выполнять в **Git Bash**, не в PowerShell: подстановки `$(...)`, `${TAG%.*}` и `$((...))` — синтаксис POSIX-шелла.
+
 ```bash
-cd "<HOME>\GitHub\MagiTrickle\.claude\worktrees\happy-spence-498b01" && TAG=$(git describe --tags --abbrev=0) && COMMIT=$(git rev-parse --short HEAD) && PRERELEASE="${TAG%.*}.$((${TAG##*.}+1))" && DATE=$(date +%Y%m%d%H%M%S) && PKGVER="${PRERELEASE}~git${DATE}.${COMMIT}" && wsl -e bash -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && eval \"\$(fnm env)\" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01 && export PKG_VERSION='$PKGVER' PKG_VERSION_PRERELEASE='$PRERELEASE' && make PLATFORM=entware TARGET=aarch64-3.10_kn GOOS=linux GOARCH=arm64 GOMIPS= 2>&1 | tail -3"
+cd "<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01" && TAG=$(git describe --tags --abbrev=0) && COMMIT=$(git rev-parse --short HEAD) && PRERELEASE="${TAG%.*}.$((${TAG##*.}+1))" && DATE=$(date +%Y%m%d%H%M%S) && PKGVER="${PRERELEASE}~git${DATE}.${COMMIT}" && echo "PKG_VERSION=$PKGVER" && wsl -e bash -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && eval \"\$(fnm env)\" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01 && export PKG_VERSION='$PKGVER' PKG_VERSION_PRERELEASE='$PRERELEASE' && make PLATFORM=entware TARGET=aarch64-3.10_kn GOOS=linux GOARCH=arm64 GOMIPS= 2>&1 | tail -3"
 ```
 
 PKG_VERSION вычисляется на Windows-стороне: в worktree WSL-git не читает `.git` с Windows-путём и версия ломается.
@@ -1385,22 +1448,47 @@ powershell -File scripts/update-router-package.ps1
 - [ ] **Step 3: Снять снимок состояния ДО проверки**
 
 ```bash
-ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; iptables-save > /opt/root/tmp/mt-before.rules; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"'
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; iptables-save > /opt/root/tmp/mt-v4-before.rules; ip6tables-save > /opt/root/tmp/mt-v6-before.rules; echo "v4 mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "v4 nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"; echo "v6 mangle: цепочек=$(ip6tables -t mangle -S | grep -c "^-N MT_")"'
 ```
 
-Записать числа — с ними сверяется восстановление. Снимок `/opt/root/tmp/mt-before.rules` остаётся страховкой.
+Снимки обоих семейств остаются на роутере до конца проверки — по ним идёт сверка и, при необходимости, ручное восстановление.
 
 - [ ] **Step 4: Проверить восстановление после полного сноса mangle**
 
+Скрипт снимает ВСЕ наши цепочки mangle (имена берутся из `iptables -S`, а не по маске hex — иначе подписочные `MT_s<hex>` уцелеют) и сразу вызывает хук. При любой ошибке между сносом и восстановлением `trap` перезапускает демон, чтобы роутер не остался без правил.
+
 ```bash
-ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; for c in $(iptables -t mangle -S PREROUTING | grep -o "MT_[0-9a-f]*" | sort -u); do iptables -t mangle -D PREROUTING ! -i lo -j $c 2>/dev/null; done; for c in $(iptables -t mangle -S | grep "^-N MT_" | awk "{print \$2}"); do iptables -t mangle -F $c 2>/dev/null; iptables -t mangle -X $c 2>/dev/null; done; echo "после сноса: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_")"; type=iptables table=mangle sh /opt/etc/ndm/netfilter.d/100-magitrickle; sleep 3; echo "после хука: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"'
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin
+set -e
+trap "echo ОШИБКА: восстанавливаю демоном; /opt/etc/init.d/S99magitrickle restart" EXIT
+
+for c in $(iptables -t mangle -S | awk "/^-N MT_/ {print \$2}"); do
+  iptables -t mangle -D PREROUTING ! -i lo -j $c 2>/dev/null || true
+  iptables -t mangle -F $c 2>/dev/null || true
+  iptables -t mangle -X $c 2>/dev/null || true
+done
+echo "после сноса: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"
+
+type=iptables table=mangle sh /opt/etc/ndm/netfilter.d/100-magitrickle
+sleep 3
+echo "после хука: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"
+
+trap - EXIT'
 ```
 
-Ожидается: после сноса — заметно меньше, после хука — числа из шага 3.
+Ожидается: после сноса — 0 цепочек и 0 джампов, после хука — числа из шага 3.
 
-Если восстановление НЕ произошло: `ssh <ROUTER_SSH> '/opt/etc/init.d/S99magitrickle restart'` и разбираться, не продолжая.
+- [ ] **Step 5: Сверить правила со снимком построчно**
 
-- [ ] **Step 5: Проверить, что хук отвечает мгновенно**
+Счётчики совпасть могут, а правила — отличаться, поэтому сверка идёт `diff`-ом. Сравниваются только наши строки: счётчики пакетов и правила прошивки меняются сами по себе.
+
+```bash
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; iptables-save | grep "MT_" | sed "s/\[[0-9]*:[0-9]*\]//" | sort > /opt/root/tmp/mt-v4-after.txt; grep "MT_" /opt/root/tmp/mt-v4-before.rules | sed "s/\[[0-9]*:[0-9]*\]//" | sort > /opt/root/tmp/mt-v4-ref.txt; if diff -u /opt/root/tmp/mt-v4-ref.txt /opt/root/tmp/mt-v4-after.txt; then echo "СОВПАДАЕТ: правила восстановлены точно"; else echo "РАСХОЖДЕНИЕ (см. diff выше)"; fi'
+```
+
+Ожидается: `СОВПАДАЕТ`. Если расхождение — разбираться, не продолжая; вернуть состояние можно `/opt/etc/init.d/S99magitrickle restart`.
+
+- [ ] **Step 6: Проверить, что хук отвечает мгновенно**
 
 ```bash
 ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; S=$(date +%s%N); type=iptables table=mangle sh /opt/etc/ndm/netfilter.d/100-magitrickle; E=$(date +%s%N); echo "хук вернулся за $(( (E-S)/1000000 )) мс"'
@@ -1408,26 +1496,28 @@ ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; S=$(date +%s%N); type=ip
 
 Ожидается: единицы миллисекунд — обработчик больше не ждёт применения правил. До изменения это же измерение давало 34–79 мс.
 
-- [ ] **Step 6: Проверить схлопывание серии событий**
+- [ ] **Step 7: Проверить, что серия событий не ломает состояние**
+
+Прошивка шлёт событие на каждую таблицу; воспроизводим серию. Само схлопывание отсюда не наблюдаемо (см. врезку выше) — проверяется устойчивость итога.
 
 ```bash
-ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; for t in mangle nat filter; do type=iptables table=$t sh /opt/etc/ndm/netfilter.d/100-magitrickle; done; sleep 3; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"'
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; for t in mangle nat filter; do type=iptables table=$t sh /opt/etc/ndm/netfilter.d/100-magitrickle; done; sleep 3; iptables-save | grep "MT_" | sed "s/\[[0-9]*:[0-9]*\]//" | sort > /opt/root/tmp/mt-v4-series.txt; if diff -u /opt/root/tmp/mt-v4-ref.txt /opt/root/tmp/mt-v4-series.txt; then echo "СОВПАДАЕТ: серия событий состояние не изменила"; else echo "РАСХОЖДЕНИЕ (см. diff выше)"; fi'
 ```
 
-Ожидается: числа совпадают со снимком из шага 3, дублей джампов нет — три события подряд не сломали состояние.
+Ожидается: `СОВПАДАЕТ` — дублей джампов и потерянных цепочек нет.
 
-- [ ] **Step 7: Проверить итоговое здоровье и убрать снимок**
+- [ ] **Step 8: Проверить IPv6 и итоговое здоровье, убрать временные файлы**
 
 ```bash
-ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; echo "pid: $(pidof magitrickled)"; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"; curl -s -o /dev/null -w "проверка связи: %{http_code}\n" -m 8 https://1.1.1.1/; rm -f /opt/root/tmp/mt-before.rules'
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; echo "pid: $(pidof magitrickled)"; ip6tables-save | grep "MT_" | sed "s/\[[0-9]*:[0-9]*\]//" | sort > /opt/root/tmp/mt-v6-after.txt; grep "MT_" /opt/root/tmp/mt-v6-before.rules | sed "s/\[[0-9]*:[0-9]*\]//" | sort > /opt/root/tmp/mt-v6-ref.txt; if diff -u /opt/root/tmp/mt-v6-ref.txt /opt/root/tmp/mt-v6-after.txt; then echo "IPv6 СОВПАДАЕТ"; else echo "IPv6 РАСХОЖДЕНИЕ"; fi; curl -s -o /dev/null -w "проверка связи: %{http_code}\n" -m 8 https://1.1.1.1/; rm -f /opt/root/tmp/mt-v4-*.rules /opt/root/tmp/mt-v6-*.rules /opt/root/tmp/mt-v4-*.txt /opt/root/tmp/mt-v6-*.txt'
 ```
 
-Ожидается: демон жив, mangle и nat совпадают со снимком, связь есть.
+Ожидается: демон жив, IPv6 совпадает со снимком (изменённый путь коммитит оба семейства), связь есть.
 
-- [ ] **Step 8: Записать результат в задачу**
+- [ ] **Step 9: Записать результат в задачу**
 
 ```bash
-bd comment mt-yvf "Полевая проверка на <ROUTER_IP>: <фактические числа из шагов 3-7>"
+bd comment mt-yvf "Полевая проверка на <ROUTER_IP>: <фактические числа и результаты diff из шагов 3-8>"
 ```
 
 ---

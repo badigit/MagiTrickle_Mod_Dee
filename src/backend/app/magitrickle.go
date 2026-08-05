@@ -73,6 +73,7 @@ type Main interface {
 	RemoveSubscriptionByIndex(idx int)
 	RebuildSubscriptionGroups() error
 	ForceCommitIPTables(ctx context.Context) error
+	RequestNetfilterCommit()
 	SyncAllGroups()
 	DNSCapture() DNSCapturer
 	Start(ctx context.Context) (err error)

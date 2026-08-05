@@ -4,9 +4,9 @@
 
 **Goal:** Обрабатывать события `netfilter.d` в отдельной горутине со схлопыванием, чтобы одна перезапись таблиц прошивкой Keenetic стоила одного прохода, а HTTP-хук отвечал мгновенно.
 
-**Architecture:** Горутина-worker с каналом запросов ёмкостью 1 (схлопывание — следствие ёмкости). Цикл ретраев получает канал пробуждения: новое событие прерывает паузу между попытками и начинает проход заново. Состояние worker'а — явная машина (`starting`/`ready`/`paused`/`stopping`) под мьютексом переходов, потому что `routingActive` выставляется до включения групп и признаком готовности быть не может.
+**Architecture:** Одна горутина владеет всем изменяемым состоянием коммиттера — текущим режимом, защёлкнутым событием и таймером страховочного прохода. Снаружи меняют режим командой через канал с подтверждением, а не записью в общую переменную: тогда гонок нет по построению, а не по договорённости. Схлопывание событий — следствие канала ёмкостью 1.
 
-**Tech Stack:** Go 1.x, стандартная библиотека (`context`, `sync`, `time`), zerolog. Тесты — `go test -tags testing`, fake-реализация `Executable` уже есть.
+**Tech Stack:** Go, стандартная библиотека (`context`, `sync`, `time`), zerolog. Тесты — `go test -tags testing`, fake-реализация `Executable` уже есть.
 
 ## Global Constraints
 
@@ -16,14 +16,14 @@
 - Комментарии в коде и сообщения коммитов — по-русски. Без AI-атрибуции и `Co-Authored-By`.
 - Коммитить после каждой задачи. Push — только по явной просьбе разработчика.
 - `iptables-restore` НЕ убиваем по приходу события (замер прода: полный проход 34–79 мс). Прерываем только ожидание между попытками.
-- Канал запросов НИКОГДА не закрывается: в него пишет HTTP-обработчик, запись в закрытый канал — паника.
-- Контракт порядка локов (нарушение = дедлок): `мьютекс переходов → cfgMu → g.locker → locker компонента → preambleMu → commitMu → ipt.sync → chain.sync → exec`. Worker берёт только хвост, начиная с `commitMu`; `cfgMu` и `g.locker` он не берёт никогда.
+- Каналы коммиттера НИКОГДА не закрываются: в них пишет HTTP-обработчик, запись в закрытый канал — паника.
+- Контракт порядка локов (нарушение = дедлок): `lifecycleMu → cfgMu → g.locker → locker компонента → preambleMu → commitMu → ipt.sync → chain.sync → exec`. Worker берёт только хвост, начиная с `commitMu`; `cfgMu` и `g.locker` он не берёт никогда.
 
 ## Что уже сделано (НЕ переделывать)
 
 Реализовано в mt-7sa (`f8f989d`) и mt-pfo (`436df82`, `2d5efe4`):
 
-- `commitMu sync.Mutex` в `IPTables` — сериализация коммитов, берётся в `CommitContext` (`utils/iptables/iptables.go:33,229`);
+- `commitMu sync.Mutex` в `IPTables` — сериализация коммитов, берётся в `CommitContext` (`utils/iptables/iptables.go:33,229`), покрыта тестом `TestCommitMuSerialisesCommits` (`utils/iptables/exec-timeout_test.go:154`);
 - `Executable.Save(ctx)`/`Restore(ctx, data)` с контекстом и потолком `execTimeout = 5s`, ошибка `ErrExecTimeout`;
 - `CommitWithRetry(ctx)` с бюджетом `commitRetryBackoff = {0, 50ms, 200ms, 500ms}`, классификаторы `IsRacedError`, `IsRetryableError`;
 - `NetfilterDHook` больше НЕ передаёт `r.Context()` — использует `context.Background()`.
@@ -32,34 +32,36 @@
 
 | Файл | Ответственность |
 |---|---|
-| `src/backend/utils/iptables/commit-retry.go` (изменить) | Добавить `CommitWithRetryWake(ctx, wake)`; `CommitWithRetry(ctx)` становится обёрткой с `nil`-каналом |
-| `src/backend/netfilter_committer.go` (создать) | Компонент `netfilterCommitter`: канал, worker, состояния, идемпотентная остановка, отложенный reconcile |
+| `src/backend/utils/iptables/commit-retry.go` (изменить) | `CommitWithRetryWake(ctx, wake)`; `CommitWithRetry(ctx)` — обёртка с `nil`-каналом |
+| `src/backend/utils/iptables/convergence_test.go` (создать) | Тесты сходимости модели: повторный коммит и восстановление после полного flush |
+| `src/backend/netfilter_committer.go` (создать) | Компонент: worker-владелец состояния, каналы, идемпотентная остановка |
 | `src/backend/netfilter_committer_test.go` (создать) | Тесты компонента на подставном коммите, без netfilter |
-| `src/backend/app.go` (изменить) | Откат при неуспешном `bringUpRouting`; `lifecycleMu` вокруг переходов; проброс состояния в коммиттер |
-| `src/backend/start.go` (изменить) | Создание коммиттера до `SetupUnixSocket`, порядок остановки, `forceCommitIPTablesWake` |
-| `src/backend/api/v1/handlers.go` (изменить) | `NetfilterDHook` шлёт неблокирующий сигнал и отвечает 200 |
+| `src/backend/app.go` (изменить) | Откат неуспешного `bringUpRouting`, `lifecycleMu`, синхронизация режима коммиттера |
+| `src/backend/start.go` (изменить) | Запуск коммиттера до открытия сокета, порядок остановки, `forceCommitIPTablesWake` |
+| `src/backend/api/v1/handlers.go` (изменить) | `NetfilterDHook` шлёт сигнал и отвечает сразу |
 | `src/backend/app/magitrickle.go` (изменить) | Метод интерфейса для сигнала коммиттеру |
 
 ---
 
-### Task 1: Пробуждаемый цикл ретраев
+### Task 1: Пробуждаемый цикл ретраев и тесты сходимости
 
 **Files:**
 - Modify: `src/backend/utils/iptables/commit-retry.go:98-141`
 - Test: `src/backend/utils/iptables/commit-retry_test.go`
+- Create: `src/backend/utils/iptables/convergence_test.go`
 
 **Interfaces:**
-- Consumes: `ipt.CommitContext(ctx) error`, `commitRetryBackoff []time.Duration`, `protoName(Protocol) string` — всё уже существует.
-- Produces: `func (ipt *IPTables) CommitWithRetryWake(ctx context.Context, wake <-chan struct{}) error`. При получении из `wake` во время паузы между попытками цикл начинается заново с полным бюджетом. `CommitWithRetry(ctx)` сохраняет прежнюю сигнатуру и поведение (эквивалент `wake = nil`).
+- Consumes: `ipt.CommitContext(ctx) error`, `commitRetryBackoff []time.Duration`, `protoName(Protocol) string`, `ErrExecTimeout`, `IsRacedError` — всё существует.
+- Produces: `func (ipt *IPTables) CommitWithRetryWake(ctx context.Context, wake <-chan struct{}) error`. Событие из `wake` во время паузы между попытками начинает проход заново с полным бюджетом. `CommitWithRetry(ctx)` сохраняет прежнюю сигнатуру и поведение (эквивалент `wake = nil`).
 
-- [ ] **Step 1: Написать падающие тесты**
+- [ ] **Step 1: Написать падающие тесты пробуждения**
 
 Добавить в конец `src/backend/utils/iptables/commit-retry_test.go`:
 
 ```go
 // TestCommitWithRetryWakeRestartsOnEvent: событие, пришедшее во время паузы
 // между попытками, прекращает ожидание и начинает проход ЗАНОВО — с полным
-// бюджетом попыток. Смысл: дельта от устаревшего снимка ляжет так же криво,
+// бюджетом попыток. Смысл: дельта считалась от снимка, который уже устарел,
 // поэтому продолжать старый проход бессмысленно.
 func TestCommitWithRetryWakeRestartsOnEvent(t *testing.T) {
 	ipt, fake := newRetryFixture(t)
@@ -68,7 +70,6 @@ func TestCommitWithRetryWakeRestartsOnEvent(t *testing.T) {
 	commitRetryBackoff = []time.Duration{0, time.Hour, time.Hour}
 	t.Cleanup(func() { commitRetryBackoff = saved })
 
-	// первая попытка проигрывает гонку, вторая (после рестарта) проходит
 	fake.FailRestore(errors.New(racedStderr))
 
 	wake := make(chan struct{}, 1)
@@ -90,7 +91,7 @@ func TestCommitWithRetryWakeRestartsOnEvent(t *testing.T) {
 }
 
 // TestCommitWithRetryWakeNilChannelBehavesAsBefore: nil-канал в select никогда
-// не готов, поэтому старое поведение сохраняется дословно.
+// не готов, поэтому прежнее поведение сохраняется дословно.
 func TestCommitWithRetryWakeNilChannelBehavesAsBefore(t *testing.T) {
 	withFastRetries(t)
 	ipt, fake := newRetryFixture(t)
@@ -106,7 +107,7 @@ func TestCommitWithRetryWakeNilChannelBehavesAsBefore(t *testing.T) {
 }
 
 // TestCommitWithRetryWakeContextWinsOverWake: отменённый контекст важнее
-// события — worker не должен писать в netfilter во время остановки.
+// события — во время остановки писать в netfilter нельзя.
 func TestCommitWithRetryWakeContextWinsOverWake(t *testing.T) {
 	withFastRetries(t)
 	ipt, fake := newRetryFixture(t)
@@ -126,15 +127,131 @@ func TestCommitWithRetryWakeContextWinsOverWake(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Запустить тесты и убедиться, что они падают**
+- [ ] **Step 2: Написать тесты сходимости**
+
+Спека требует их отдельно от пробуждения: они доказывают, почему коммиттеру не нужен `drop-then-stage`.
+
+Создать `src/backend/utils/iptables/convergence_test.go`:
+
+```go
+//go:build testing
+
+package iptables
+
+import (
+	"context"
+	"testing"
+)
+
+// convergenceFixture — цепочка MT_TEST с двумя правилами и джампом из
+// PREROUTING: минимальная модель того, что демон держит для одной группы.
+func convergenceFixture(t *testing.T) (*IPTables, *FakeIPTables) {
+	t.Helper()
+
+	fake := NewFakeIPTables(ProtocolIPv4)
+	fake.SetInitialRules("mangle", "PREROUTING", nil)
+
+	ipt := NewIPTables(fake)
+	if err := ipt.RegisterChainPatch("mangle", "PREROUTING"); err != nil {
+		t.Fatalf("RegisterChainPatch failed: %v", err)
+	}
+	if err := ipt.RegisterChainOverride("mangle", "MT_TEST"); err != nil {
+		t.Fatalf("RegisterChainOverride failed: %v", err)
+	}
+	if err := ipt.Append("mangle", "MT_TEST", "-p", "udp", "-j", "ACCEPT"); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+	if err := ipt.Append("mangle", "MT_TEST", "-p", "tcp", "-j", "ACCEPT"); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+	if err := ipt.Append("mangle", "PREROUTING", "!", "-i", "lo", "-j", "MT_TEST"); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+	return ipt, fake
+}
+
+// TestCommitIsIdempotent: повторный коммит при неизменной модели не должен
+// порождать НИ ОДНОЙ команды. Это основание отказа от drop-then-stage: лишний
+// проход коммиттера ничего не стоит и ничего не ломает.
+func TestCommitIsIdempotent(t *testing.T) {
+	ipt, fake := convergenceFixture(t)
+
+	if err := ipt.Commit(); err != nil {
+		t.Fatalf("первый Commit failed: %v", err)
+	}
+	callsAfterFirst := fake.RestoreCalls()
+
+	if err := ipt.Commit(); err != nil {
+		t.Fatalf("второй Commit failed: %v", err)
+	}
+	if got := fake.RestoreCalls(); got != callsAfterFirst {
+		t.Errorf("второй Commit выполнил restore (%d -> %d), хотя модель не менялась", callsAfterFirst, got)
+	}
+
+	rules := fake.GetRules("mangle", "MT_TEST")
+	if len(rules) != 2 {
+		t.Errorf("правил в цепочке = %d, want 2 (дублей быть не должно): %v", len(rules), rules)
+	}
+	jumps := fake.GetRules("mangle", "PREROUTING")
+	if len(jumps) != 1 {
+		t.Errorf("джампов = %d, want 1 (дублей быть не должно): %v", len(jumps), jumps)
+	}
+}
+
+// TestCommitRecoversAfterFullFlush: прошивка Keenetic переписывает таблицу
+// целиком, снося наши цепочки. Повторный коммит обязан восстановить их из
+// модели — без пересборки модели и без drop-then-stage.
+func TestCommitRecoversAfterFullFlush(t *testing.T) {
+	ipt, fake := convergenceFixture(t)
+
+	if err := ipt.Commit(); err != nil {
+		t.Fatalf("первый Commit failed: %v", err)
+	}
+
+	// прошивка стёрла всё
+	fake.SetInitialRules("mangle", "PREROUTING", nil)
+	fake.DropChain("mangle", "MT_TEST")
+
+	if err := ipt.CommitContext(context.Background()); err != nil {
+		t.Fatalf("восстановительный Commit failed: %v", err)
+	}
+
+	if !fake.ChainExists("mangle", "MT_TEST") {
+		t.Fatal("цепочка MT_TEST не восстановлена после полного flush")
+	}
+	if got := len(fake.GetRules("mangle", "MT_TEST")); got != 2 {
+		t.Errorf("правил в восстановленной цепочке = %d, want 2", got)
+	}
+	if got := len(fake.GetRules("mangle", "PREROUTING")); got != 1 {
+		t.Errorf("джампов после восстановления = %d, want 1", got)
+	}
+}
+```
+
+- [ ] **Step 3: Добавить в fake удаление цепочки**
+
+Тест сходимости моделирует снос цепочки прошивкой, поэтому fake должен уметь её убирать. Добавить в `src/backend/utils/iptables/executable-fake.go` рядом с `ChainExists`:
+
+```go
+// DropChain удаляет цепочку целиком — так выглядит перезапись таблицы
+// прошивкой Keenetic со стороны нашей модели.
+func (ipt *FakeIPTables) DropChain(table, chain string) {
+	if ipt.rules[table] == nil {
+		return
+	}
+	delete(ipt.rules[table], chain)
+}
+```
+
+- [ ] **Step 4: Запустить тесты и убедиться, что они падают**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run Wake ./utils/iptables/ 2>&1 | grep -v "^{"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run "Wake|Converg|Idempotent|Flush" ./utils/iptables/ 2>&1 | grep -v "^{" | head -20'
 ```
 
 Ожидается: `undefined: ipt.CommitWithRetryWake` (ошибка компиляции).
 
-- [ ] **Step 3: Реализовать**
+- [ ] **Step 5: Реализовать пробуждаемый цикл**
 
 В `src/backend/utils/iptables/commit-retry.go` заменить тело `CommitWithRetry` целиком (строки 98–141) на:
 
@@ -154,19 +271,18 @@ func (ipt *IPTables) CommitWithRetry(ctx context.Context) error {
 // совпадает с прежним.
 func (ipt *IPTables) CommitWithRetryWake(ctx context.Context, wake <-chan struct{}) error {
 	for {
-		lastErr, restarted := ipt.commitRetryPass(ctx, wake)
-		if restarted {
-			log.Debug().
-				Str("type", protoName(ipt.Proto())).
-				Msg("iptables commit restarted by a new netfilter event")
-			continue
+		err, restarted := ipt.commitRetryPass(ctx, wake)
+		if !restarted {
+			return err
 		}
-		return lastErr
+		log.Debug().
+			Str("type", protoName(ipt.Proto())).
+			Msg("iptables commit restarted by a new netfilter event")
 	}
 }
 
-// commitRetryPass — один проход по бюджету попыток. Возвращает (ошибка, true),
-// если проход прерван событием из wake и его надо начать заново.
+// commitRetryPass — один проход по бюджету попыток. Второе значение true
+// означает, что проход прерван событием из wake и должен начаться заново.
 func (ipt *IPTables) commitRetryPass(ctx context.Context, wake <-chan struct{}) (error, bool) {
 	var lastErr error
 
@@ -216,18 +332,18 @@ func (ipt *IPTables) commitRetryPass(ctx context.Context, wake <-chan struct{}) 
 }
 ```
 
-- [ ] **Step 4: Запустить весь пакет**
+- [ ] **Step 6: Запустить весь пакет с -race**
 
 ```bash
 wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -race ./utils/iptables/ 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
-Ожидается: `ok magitrickle/utils/iptables`. Старые тесты `commit-retry_test.go` должны пройти без правок — это проверка того, что обёртка не изменила поведение.
+Ожидается: `ok magitrickle/utils/iptables`. Старые тесты должны пройти без правок — это проверка того, что обёртка не изменила поведение.
 
-- [ ] **Step 5: Коммит**
+- [ ] **Step 7: Коммит**
 
 ```bash
-git add src/backend/utils/iptables/commit-retry.go src/backend/utils/iptables/commit-retry_test.go
+git add src/backend/utils/iptables/
 git commit -m "feat(netfilter): цикл ретраев умеет прерываться новым событием (mt-yvf)
 
 CommitWithRetryWake слушает канал пробуждения в паузе между попытками:
@@ -235,28 +351,31 @@ CommitWithRetryWake слушает канал пробуждения в пауз
 со старой дельтой бессмысленно — он начинается заново с полным бюджетом.
 
 CommitWithRetry остаётся обёрткой с nil-каналом, синхронные пути и их тесты
-не тронуты: nil-канал в select никогда не готов."
+не тронуты: nil-канал в select никогда не готов.
+
+Плюс тесты сходимости, на которых стоит отказ от drop-then-stage: повторный
+коммит при неизменной модели не порождает команд и не плодит дублей, а после
+полного сноса цепочки она восстанавливается из модели."
 ```
 
 ---
 
-### Task 2: Компонент коммиттера — канал, worker, идемпотентная остановка
+### Task 2: Компонент коммиттера
 
 **Files:**
 - Create: `src/backend/netfilter_committer.go`
 - Create: `src/backend/netfilter_committer_test.go`
 
 **Interfaces:**
-- Consumes: ничего из предыдущих задач (компонент изолирован, функция коммита внедряется).
+- Consumes: ничего из предыдущих задач — функция коммита внедряется, поэтому компонент тестируется без netfilter.
 - Produces:
-  - тип `netfilterCommitter` с полями-методами ниже;
-  - `func newNetfilterCommitter(commit func(ctx context.Context, wake <-chan struct{}) error) *netfilterCommitter`;
-  - `func (c *netfilterCommitter) start(ctx context.Context)` — запускает worker;
-  - `func (c *netfilterCommitter) request()` — неблокирующий сигнал;
+  - `func startNetfilterCommitter(ctx context.Context, commit func(ctx context.Context, wake <-chan struct{}) error, reconcileDelay time.Duration) *netfilterCommitter` — создаёт И запускает worker (раздельных «создать» и «запустить» нет намеренно: так невозможно обратиться к незапущенному компоненту);
+  - `func (c *netfilterCommitter) request()` — неблокирующий сигнал «нужен проход»;
+  - `func (c *netfilterCommitter) setMode(m committerMode)` — синхронная смена режима, возвращается после того, как worker её принял;
   - `func (c *netfilterCommitter) stop()` — идемпотентная остановка с ожиданием worker'а;
-  - константы состояний `committerStarting`, `committerReady`, `committerPaused`, `committerStopping` и метод `setState(committerState)`.
+  - режимы `committerStarting`, `committerReady`, `committerPaused`, `committerStopping`.
 
-  В этой задаче реализуются ТОЛЬКО `committerReady` и `committerStopping`; остальные состояния объявляются и обрабатываются в Task 3.
+**Ключевое решение:** режим, защёлкнутое событие и таймер страховочного прохода — локальные переменные горутины `run`. Снаружи режим меняют командой через канал. Поэтому «проверили режим, а он сменился» и «таймер пережил паузу» невозможны по построению, а не по договорённости.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -276,138 +395,199 @@ import (
 	"time"
 )
 
-// waitFor ждёт выполнения условия до таймаута. Нужен потому, что worker
-// асинхронный: без ожидания тест проверял бы состояние раньше, чем worker
-// успел сработать, и был бы флаки.
-func waitFor(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+// waitFor ждёт выполнения условия. Применяется ТОЛЬКО для положительных
+// ожиданий («проход должен произойти»): для отрицательных таймер дал бы
+// ложно-зелёный результат, поэтому отсутствие прохода везде проверяется
+// через итоговый счётчик после синхронной точки (setMode).
+func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("условие не выполнилось за %v: %s", timeout, msg)
+	t.Fatalf("условие не выполнилось: %s", msg)
 }
 
-// TestCommitterRunsRequestedPass: сигнал приводит к проходу.
+func newTestCommitter(t *testing.T, commit func(ctx context.Context, wake <-chan struct{}) error) *netfilterCommitter {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c := startNetfilterCommitter(ctx, commit, time.Hour) // reconcile по умолчанию не мешает
+	t.Cleanup(c.stop)
+	return c
+}
+
+// TestCommitterRunsRequestedPass: в режиме ready сигнал приводит к проходу.
 func TestCommitterRunsRequestedPass(t *testing.T) {
 	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
 		passes.Add(1)
 		return nil
 	})
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-	defer c.stop()
+	c.setMode(committerReady)
 
 	c.request()
-	waitFor(t, time.Second, func() bool { return passes.Load() == 1 }, "проход не выполнен")
+	waitFor(t, func() bool { return passes.Load() == 1 }, "проход не выполнен")
 }
 
-// TestCommitterFoldsRequests: канал ёмкостью 1 гарантирует «не более одного
-// ОТЛОЖЕННОГО прохода». Проверяем именно это, а не «ровно один проход»:
-// последнее зависит от того, когда worker забрал сигнал, и такой тест был бы
-// флаки.
+// TestCommitterFoldsRequests: канал ёмкостью 1 даёт «не более одного
+// ОТЛОЖЕННОГО прохода». Проверяем именно это: «ровно один проход на серию»
+// зависит от планировщика и таким тестом не проверяется.
 func TestCommitterFoldsRequests(t *testing.T) {
 	release := make(chan struct{})
+	entered := make(chan struct{}, 8)
 	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
+
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
 		passes.Add(1)
-		<-release // держим worker внутри прохода
+		entered <- struct{}{}
+		<-release
 		return nil
 	})
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
+	c.setMode(committerReady)
 
 	c.request()
-	waitFor(t, time.Second, func() bool { return passes.Load() == 1 }, "первый проход не начался")
+	<-entered // worker внутри первого прохода
 
-	// пока worker занят, шлём ещё три события — они должны схлопнуться в один
+	// пока worker занят, шлём ещё три события
 	for i := 0; i < 3; i++ {
 		c.request()
 	}
 	close(release)
 
-	waitFor(t, time.Second, func() bool { return passes.Load() == 2 }, "отложенный проход не выполнен")
-	time.Sleep(50 * time.Millisecond)
+	waitFor(t, func() bool { return passes.Load() == 2 }, "отложенный проход не выполнен")
+
+	// синхронная точка: после setMode worker гарантированно обработал всё,
+	// что успел взять из каналов до неё
+	c.setMode(committerReady)
 	if got := passes.Load(); got != 2 {
-		t.Errorf("проходов = %d, want 2 (первый + один схлопнутый отложенный)", got)
+		t.Errorf("проходов = %d, want 2 (первый + один схлопнутый)", got)
 	}
-	c.stop()
 }
 
 // TestCommitterDoesNotLoseEventDuringPass: событие, пришедшее ВО ВРЕМЯ прохода,
-// не теряется — за текущим проходом гарантированно следует ещё один.
+// не теряется — за текущим проходом следует ещё один.
 func TestCommitterDoesNotLoseEventDuringPass(t *testing.T) {
 	var passes atomic.Int32
 	entered := make(chan struct{}, 8)
 	release := make(chan struct{})
 	var once sync.Once
 
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
 		passes.Add(1)
 		entered <- struct{}{}
 		once.Do(func() { <-release })
 		return nil
 	})
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-	defer c.stop()
+	c.setMode(committerReady)
 
 	c.request()
-	<-entered // worker внутри первого прохода
+	<-entered
 	c.request()
 	close(release)
 
-	waitFor(t, time.Second, func() bool { return passes.Load() >= 2 }, "событие во время прохода потеряно")
+	waitFor(t, func() bool { return passes.Load() >= 2 }, "событие во время прохода потеряно")
 }
 
-// TestCommitterStopIsIdempotent: stop вызывается двумя путями (явно перед
-// teardown и через defer на ранних выходах), поэтому повторный вызов обязан
+// TestCommitterLatchesEventWhileStarting: событие в starting не исполняется,
+// но и не теряется — оно срабатывает при переходе в ready.
+func TestCommitterLatchesEventWhileStarting(t *testing.T) {
+	var passes atomic.Int32
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
+		passes.Add(1)
+		return nil
+	})
+	// режим по умолчанию — starting
+
+	c.request()
+	c.setMode(committerReady)
+
+	waitFor(t, func() bool { return passes.Load() == 1 }, "защёлкнутое событие не исполнено после ready")
+
+	c.setMode(committerReady)
+	if got := passes.Load(); got != 1 {
+		t.Errorf("проходов = %d, want 1 (защёлка должна сработать ровно один раз)", got)
+	}
+}
+
+// TestCommitterDiscardsEventWhilePaused: на паузе цепочки сняты намеренно,
+// событие отбрасывается вместе с защёлкой. Копить его до Resume неверно:
+// Resume пересобирает правила из модели, а не из накопленных событий.
+func TestCommitterDiscardsEventWhilePaused(t *testing.T) {
+	var passes atomic.Int32
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
+		passes.Add(1)
+		return nil
+	})
+	c.setMode(committerPaused)
+
+	c.request()
+	c.setMode(committerPaused) // синхронная точка: событие уже обработано и отброшено
+	c.setMode(committerReady)
+
+	// теперь убеждаемся, что worker жив и работает, но старое событие не всплыло
+	c.request()
+	waitFor(t, func() bool { return passes.Load() == 1 }, "worker не обработал новое событие")
+
+	c.setMode(committerReady)
+	if got := passes.Load(); got != 1 {
+		t.Errorf("проходов = %d, want 1 (событие с паузы не должно всплывать)", got)
+	}
+}
+
+// TestCommitterDropsLatchOnPause: защёлка, взведённая в starting, не должна
+// пережить уход на паузу.
+func TestCommitterDropsLatchOnPause(t *testing.T) {
+	var passes atomic.Int32
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
+		passes.Add(1)
+		return nil
+	})
+
+	c.request()
+	c.setMode(committerStarting) // синхронная точка: событие защёлкнуто
+	c.setMode(committerPaused)
+	c.setMode(committerReady)
+
+	c.request()
+	waitFor(t, func() bool { return passes.Load() == 1 }, "worker не обработал новое событие")
+
+	c.setMode(committerReady)
+	if got := passes.Load(); got != 1 {
+		t.Errorf("проходов = %d, want 1 (защёлка должна сброситься на паузе)", got)
+	}
+}
+
+// TestCommitterStopIsIdempotent: stop вызывается двумя путями — явно перед
+// снятием правил и defer'ом на ранних выходах, поэтому повторный вызов обязан
 // быть no-op, а не паникой или зависанием.
 func TestCommitterStopIsIdempotent(t *testing.T) {
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error { return nil })
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error { return nil })
+	c.setMode(committerReady)
 
 	c.stop()
 	c.stop()
 	c.stop()
 }
 
-// TestCommitterStopWaitsForWorker: после stop ни один проход не должен идти —
-// иначе teardown снимал бы цепочки, пока worker их восстанавливает.
+// TestCommitterStopWaitsForWorker: после stop ни один проход не идёт — иначе
+// teardown снимал бы цепочки, пока worker их восстанавливает.
 func TestCommitterStopWaitsForWorker(t *testing.T) {
 	inPass := make(chan struct{})
 	finish := make(chan struct{})
 	var running atomic.Bool
 
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
 		running.Store(true)
 		close(inPass)
 		<-finish
 		running.Store(false)
 		return nil
 	})
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
+	c.setMode(committerReady)
 
 	c.request()
 	<-inPass
@@ -427,7 +607,7 @@ func TestCommitterStopWaitsForWorker(t *testing.T) {
 	close(finish)
 	select {
 	case <-stopped:
-	case <-time.After(time.Second):
+	case <-time.After(2 * time.Second):
 		t.Fatal("stop не дождался worker'а")
 	}
 	if running.Load() {
@@ -435,57 +615,75 @@ func TestCommitterStopWaitsForWorker(t *testing.T) {
 	}
 }
 
-// TestCommitterRequestAfterStopDoesNotPanic: канал не закрывается, поэтому
-// поздний сигнал от HTTP-обработчика безопасен.
-func TestCommitterRequestAfterStopDoesNotPanic(t *testing.T) {
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error { return nil })
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
+// TestCommitterAfterStopIsInert: поздние вызовы от HTTP-обработчика безопасны —
+// каналы не закрываются, а setMode не виснет на мёртвом worker'е.
+func TestCommitterAfterStopIsInert(t *testing.T) {
+	var passes atomic.Int32
+	c := newTestCommitter(t, func(ctx context.Context, wake <-chan struct{}) error {
+		passes.Add(1)
+		return nil
+	})
+	c.setMode(committerReady)
 	c.stop()
 
 	c.request()
 	c.request()
-}
+	c.setMode(committerReady) // не должен зависнуть
 
-// TestCommitterStopWithoutStart: defer на раннем выходе из Start может позвать
-// stop до start — это не должно зависать.
-func TestCommitterStopWithoutStart(t *testing.T) {
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error { return nil })
-	done := make(chan struct{})
-	go func() {
-		c.stop()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("stop без start завис")
+	if got := passes.Load(); got != 0 {
+		t.Errorf("проходов после stop = %d, want 0", got)
 	}
 }
 
-// TestCommitterPassErrorDoesNotKillWorker: ошибка прохода не должна ронять
-// worker — следующее событие обязано обработаться.
-func TestCommitterPassErrorDoesNotKillWorker(t *testing.T) {
+// TestCommitterSchedulesReconcileAfterFailure: если проход провалился и новых
+// событий нет, страховочный проход обязан состояться сам — иначе правила
+// останутся снятыми до перезапуска демона.
+func TestCommitterSchedulesReconcileAfterFailure(t *testing.T) {
 	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
-		passes.Add(1)
-		return errors.New("boom")
-	})
-	c.setState(committerReady)
-	c.reconcileDelay = time.Hour // отложенный reconcile здесь не проверяем
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	c := startNetfilterCommitter(ctx, func(ctx context.Context, wake <-chan struct{}) error {
+		if passes.Add(1) == 1 {
+			return errors.New("проиграли гонку")
+		}
+		return nil
+	}, 10*time.Millisecond)
+	t.Cleanup(c.stop)
+	c.setMode(committerReady)
+
+	c.request()
+	waitFor(t, func() bool { return passes.Load() >= 2 }, "страховочный проход не состоялся")
+}
+
+// TestCommitterReconcileDoesNotSurvivePause: взведённый страховочный таймер не
+// должен выстрелить после ухода на паузу — иначе он вернёт правила, которые
+// teardown только что снял.
+func TestCommitterReconcileDoesNotSurvivePause(t *testing.T) {
+	var passes atomic.Int32
+	failed := make(chan struct{})
+	var once sync.Once
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-	defer c.stop()
+	t.Cleanup(cancel)
+
+	c := startNetfilterCommitter(ctx, func(ctx context.Context, wake <-chan struct{}) error {
+		passes.Add(1)
+		once.Do(func() { close(failed) })
+		return errors.New("проиграли гонку")
+	}, 50*time.Millisecond)
+	t.Cleanup(c.stop)
+	c.setMode(committerReady)
 
 	c.request()
-	waitFor(t, time.Second, func() bool { return passes.Load() == 1 }, "первый проход не выполнен")
-	c.request()
-	waitFor(t, time.Second, func() bool { return passes.Load() == 2 }, "worker умер после ошибки")
+	<-failed                    // проход провалился, таймер взведён
+	c.setMode(committerPaused)  // синхронная точка: worker принял паузу
+
+	before := passes.Load()
+	time.Sleep(150 * time.Millisecond) // таймер успел бы выстрелить дважды
+	if got := passes.Load(); got != before {
+		t.Errorf("проходов %d -> %d: страховочный таймер пережил паузу", before, got)
+	}
 }
 ```
 
@@ -495,7 +693,7 @@ func TestCommitterPassErrorDoesNotKillWorker(t *testing.T) {
 wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run Committer . 2>&1 | grep -v "^{" | head -20'
 ```
 
-Ожидается: `undefined: newNetfilterCommitter` (ошибка компиляции).
+Ожидается: `undefined: startNetfilterCommitter` (ошибка компиляции).
 
 - [ ] **Step 3: Реализовать компонент**
 
@@ -507,33 +705,32 @@ package magitrickle
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
-// committerState — состояние коммиттера. Определяет, что делать с пришедшим
-// событием netfilter.d. Признаком готовности НЕ может служить routingActive:
-// он выставляется в начале bringUpRouting, до включения групп.
-type committerState int32
+// committerMode — что коммиттер делает с пришедшим событием netfilter.d.
+// Признаком готовности НЕ может служить routingActive: он выставляется в
+// начале bringUpRouting, до включения групп.
+type committerMode int
 
 const (
 	// committerStarting — модель ещё собирается. Событие защёлкивается и
 	// исполняется при переходе в ready. Отбрасывать нельзя: прошивка могла
 	// снести уже поднятые группы, а включение последующих их не восстановит.
-	committerStarting committerState = iota
+	committerStarting committerMode = iota
 	// committerReady — проходы выполняются.
 	committerReady
 	// committerPaused — роутинг снят намеренно (config.Enabled=false).
-	// Событие подтверждается и отбрасывается.
+	// Событие отбрасывается вместе с защёлкой.
 	committerPaused
-	// committerStopping — идёт остановка, события не принимаются.
+	// committerStopping — идёт остановка, проходы больше не начинаются.
 	committerStopping
 )
 
-// defaultReconcileDelay — задержка страховочного прохода после того, как бюджет
-// попыток исчерпан. Без него серия проигранных гонок и последующая тишина
+// defaultReconcileDelay — задержка страховочного прохода после исчерпания
+// бюджета попыток. Без него серия проигранных гонок и последующая тишина
 // оставили бы правила снятыми до перезапуска демона.
 const defaultReconcileDelay = 2 * time.Second
 
@@ -541,64 +738,86 @@ const defaultReconcileDelay = 2 * time.Second
 // наши правила по событиям netfilter.d.
 //
 // Прошивка Keenetic переписывает таблицу целиком и шлёт событие на КАЖДУЮ
-// таблицу, поэтому одна её перезапись даёт несколько событий подряд. Канал
+// таблицу, поэтому одна её перезапись даёт несколько событий подряд. Канал req
 // ёмкостью 1 схлопывает их: гарантия — не более одного ОТЛОЖЕННОГО прохода.
+//
+// Весь изменяемый состав — режим, защёлка и страховочный таймер — живёт
+// локальными переменными горутины run. Снаружи режим меняют командой через
+// канал cmds, поэтому «проверили режим, а он сменился» и «таймер пережил
+// паузу» невозможны по построению.
 type netfilterCommitter struct {
-	// req — канал запросов ёмкостью 1. НИКОГДА не закрывается: в него пишет
+	// req — «нужен проход», ёмкость 1. НИКОГДА не закрывается: в него пишет
 	// HTTP-обработчик, а запись в закрытый канал — паника.
 	req chan struct{}
+	// wake — «прерви ожидание между попытками», ёмкость 1. Отдельный канал, а
+	// не req: проход состоит из двух коммитов (IPv4 и IPv6), и общий канал
+	// означал бы, что первый съест сигнал, предназначенный обоим.
+	wake chan struct{}
+	// cmds — смена режима с подтверждением.
+	cmds chan committerCmd
 
-	// commit — сама работа. Внедряется, чтобы компонент тестировался без
-	// netfilter. Второй аргумент — канал пробуждения для прерывания пауз
-	// между попытками (см. CommitWithRetryWake).
-	commit func(ctx context.Context, wake <-chan struct{}) error
-
-	state   atomic.Int32
-	latched atomic.Bool // событие, пришедшее в состоянии starting
-
+	commit         func(ctx context.Context, wake <-chan struct{}) error
 	reconcileDelay time.Duration
 
-	startOnce sync.Once
-	stopOnce  sync.Once
-	cancel    context.CancelFunc
-	done      chan struct{}
+	stopOnce sync.Once
+	cancel   context.CancelFunc
+	done     chan struct{}
 }
 
-func newNetfilterCommitter(commit func(ctx context.Context, wake <-chan struct{}) error) *netfilterCommitter {
+type committerCmd struct {
+	mode committerMode
+	ack  chan struct{}
+}
+
+// startNetfilterCommitter создаёт и СРАЗУ запускает коммиттер. Раздельных
+// «создать» и «запустить» нет намеренно: так к компоненту невозможно
+// обратиться до старта worker'а.
+func startNetfilterCommitter(
+	ctx context.Context,
+	commit func(ctx context.Context, wake <-chan struct{}) error,
+	reconcileDelay time.Duration,
+) *netfilterCommitter {
+	workerCtx, cancel := context.WithCancel(ctx)
 	c := &netfilterCommitter{
 		req:            make(chan struct{}, 1),
+		wake:           make(chan struct{}, 1),
+		cmds:           make(chan committerCmd),
 		commit:         commit,
-		reconcileDelay: defaultReconcileDelay,
+		reconcileDelay: reconcileDelay,
+		cancel:         cancel,
 		done:           make(chan struct{}),
 	}
-	c.state.Store(int32(committerStarting))
+	go c.run(workerCtx)
 	return c
 }
 
-func (c *netfilterCommitter) setState(s committerState) {
-	c.state.Store(int32(s))
-}
-
-func (c *netfilterCommitter) currentState() committerState {
-	return committerState(c.state.Load())
-}
-
 // request — неблокирующий сигнал. Если запрос уже висит, новый растворяется:
-// это и есть схлопывание.
+// это и есть схлопывание. Дополнительно будит цикл ретраев, если проход прямо
+// сейчас пережидает паузу между попытками.
 func (c *netfilterCommitter) request() {
 	select {
 	case c.req <- struct{}{}:
 	default:
 	}
+	select {
+	case c.wake <- struct{}{}:
+	default:
+	}
 }
 
-// start запускает worker. Повторный вызов — no-op.
-func (c *netfilterCommitter) start(ctx context.Context) {
-	c.startOnce.Do(func() {
-		workerCtx, cancel := context.WithCancel(ctx)
-		c.cancel = cancel
-		go c.run(workerCtx)
-	})
+// setMode меняет режим и возвращается ПОСЛЕ того, как worker команду принял.
+// Синхронность важна: перевод в paused обязан гарантировать, что нового
+// прохода уже не начнётся, иначе он вернул бы правила, которые снимает
+// teardown.
+//
+// Если worker уже мёртв, вызов просто возвращается.
+func (c *netfilterCommitter) setMode(m committerMode) {
+	ack := make(chan struct{})
+	select {
+	case c.cmds <- committerCmd{mode: m, ack: ack}:
+		<-ack
+	case <-c.done:
+	}
 }
 
 // stop переводит коммиттер в stopping, отменяет worker и ДОЖДАВШИСЬ его
@@ -606,12 +825,6 @@ func (c *netfilterCommitter) start(ctx context.Context) {
 // defer'ом на ранних выходах из Start.
 func (c *netfilterCommitter) stop() {
 	c.stopOnce.Do(func() {
-		c.setState(committerStopping)
-		if c.cancel == nil {
-			// start не вызывался: worker'а нет, ждать нечего.
-			close(c.done)
-			return
-		}
 		c.cancel()
 		<-c.done
 	})
@@ -620,43 +833,77 @@ func (c *netfilterCommitter) stop() {
 func (c *netfilterCommitter) run(ctx context.Context) {
 	defer close(c.done)
 
-	// reconcile — страховочный таймер после исчерпания бюджета. Живёт ИМЕННО
-	// здесь, как case этого select: отвязанный time.AfterFunc пережил бы
-	// остановку и запустил бы запись во время teardown.
+	mode := committerStarting
+	latched := false
+	// reconcile — страховочный таймер. Живёт ИМЕННО здесь: отвязанный
+	// time.AfterFunc пережил бы и смену режима, и остановку.
 	var reconcile <-chan time.Time
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
+
+		case cmd := <-c.cmds:
+			switch cmd.mode {
+			case committerPaused, committerStopping:
+				// Правила снимаются намеренно: ни защёлка, ни страховочный
+				// проход не должны их вернуть.
+				latched = false
+				reconcile = nil
+			case committerReady:
+				if latched {
+					latched = false
+					c.request()
+				}
+			}
+			mode = cmd.mode
+			close(cmd.ack)
+			continue
+
 		case <-c.req:
 			reconcile = nil
+
 		case <-reconcile:
 			reconcile = nil
 		}
 
-		if c.currentState() == committerStopping {
+		switch mode {
+		case committerStopping:
 			return
+		case committerStarting:
+			latched = true
+			continue
+		case committerPaused:
+			continue
 		}
 
-		if err := c.commit(ctx, c.req); err != nil {
+		// Осушаем wake: сигнал, оставшийся от предыдущего события, не должен
+		// прервать проход, который ещё не начался.
+		select {
+		case <-c.wake:
+		default:
+		}
+
+		if err := c.commit(ctx, c.wake); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Warn().Err(err).Msg("netfilter commit pass failed, scheduling reconcile")
+			log.Warn().Err(err).Dur("retry_in", c.reconcileDelay).
+				Msg("netfilter commit pass failed, scheduling reconcile")
 			reconcile = time.After(c.reconcileDelay)
 		}
 	}
 }
 ```
 
-- [ ] **Step 4: Запустить тесты**
+- [ ] **Step 4: Запустить тесты с -race**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -race -run Committer . 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -race -run Committer -count=3 . 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
-Ожидается: `ok magitrickle`.
+`-count=3` — проверка на флаки. Ожидается: `ok magitrickle`.
 
 - [ ] **Step 5: Коммит**
 
@@ -664,297 +911,48 @@ wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd 
 git add src/backend/netfilter_committer.go src/backend/netfilter_committer_test.go
 git commit -m "feat(netfilter): компонент асинхронного коммиттера правил (mt-yvf)
 
-Горутина с каналом запросов ёмкостью 1. Схлопывание — следствие ёмкости:
-прошивка шлёт событие на каждую таблицу, и серия событий от одной перезаписи
-даёт не более одного отложенного прохода.
+Горутина владеет всем изменяемым состоянием — режимом, защёлкой и страховочным
+таймером. Снаружи режим меняют командой через канал с подтверждением, поэтому
+«проверили режим, а он сменился» и «таймер пережил паузу» невозможны по
+построению, а не по договорённости.
 
-Остановка идемпотентна и дожидается worker'а: она вызывается двумя путями —
-явно перед снятием правил и defer'ом на ранних выходах из Start. Канал
-запросов не закрывается, поэтому поздний сигнал от HTTP-обработчика безопасен.
+Схлопывание — следствие канала ёмкостью 1: прошивка шлёт событие на каждую
+таблицу, и серия от одной перезаписи даёт не более одного отложенного прохода.
 
-Страховочный таймер после исчерпания бюджета попыток живёт case'ом внутри
-select worker'а: отвязанный AfterFunc пережил бы остановку и начал запись во
-время teardown."
+Пробуждение цикла ретраев идёт отдельным каналом, а не тем же, что события:
+проход состоит из двух коммитов (IPv4 и IPv6), и общий канал означал бы, что
+первый съедает сигнал, предназначенный обоим.
+
+Создание совмещено с запуском: обратиться к незапущенному компоненту нельзя,
+поэтому и ветки «остановлен до старта» не существует."
 ```
 
 ---
 
-### Task 3: Машина состояний — защёлкивание на старте и отбрасывание на паузе
-
-**Files:**
-- Modify: `src/backend/netfilter_committer.go`
-- Modify: `src/backend/netfilter_committer_test.go`
-
-**Interfaces:**
-- Consumes: `netfilterCommitter`, `setState`, `request`, `start`, `stop` из Task 2.
-- Produces: `func (c *netfilterCommitter) setStateAndDrain(s committerState)` — смена состояния с немедленным исполнением защёлкнутого события при переходе в `ready`. Вызывающий из Task 5 использует именно её, а не `setState`.
-
-- [ ] **Step 1: Написать падающие тесты**
-
-Добавить в `src/backend/netfilter_committer_test.go`:
-
-```go
-// TestCommitterLatchesEventWhileStarting: событие в starting не исполняется,
-// но и не теряется — оно должно сработать при переходе в ready.
-func TestCommitterLatchesEventWhileStarting(t *testing.T) {
-	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
-		passes.Add(1)
-		return nil
-	})
-	// состояние по умолчанию — starting
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-	defer c.stop()
-
-	c.request()
-	time.Sleep(50 * time.Millisecond)
-	if got := passes.Load(); got != 0 {
-		t.Fatalf("проходов = %d, want 0 (в starting исполнять нельзя)", got)
-	}
-
-	c.setStateAndDrain(committerReady)
-	waitFor(t, time.Second, func() bool { return passes.Load() == 1 }, "защёлкнутое событие не исполнено после ready")
-}
-
-// TestCommitterDiscardsEventWhilePaused: на паузе цепочки сняты намеренно,
-// событие подтверждается и отбрасывается. Копить его до Resume неверно:
-// Resume пересобирает правила из модели, а не из накопленных событий.
-func TestCommitterDiscardsEventWhilePaused(t *testing.T) {
-	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
-		passes.Add(1)
-		return nil
-	})
-	c.setState(committerPaused)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-	defer c.stop()
-
-	c.request()
-	time.Sleep(50 * time.Millisecond)
-	if got := passes.Load(); got != 0 {
-		t.Fatalf("проходов = %d, want 0 (на паузе исполнять нечего)", got)
-	}
-
-	// переход в ready НЕ должен «доигрывать» событие с паузы
-	c.setStateAndDrain(committerReady)
-	time.Sleep(50 * time.Millisecond)
-	if got := passes.Load(); got != 0 {
-		t.Errorf("проходов = %d, want 0 (событие с паузы не должно всплывать)", got)
-	}
-}
-
-// TestCommitterDropsLatchOnPause: защёлкнутое в starting событие не должно
-// пережить уход на паузу.
-func TestCommitterDropsLatchOnPause(t *testing.T) {
-	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
-		passes.Add(1)
-		return nil
-	})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-	defer c.stop()
-
-	c.request()
-	time.Sleep(50 * time.Millisecond)
-
-	c.setStateAndDrain(committerPaused)
-	c.setStateAndDrain(committerReady)
-	time.Sleep(50 * time.Millisecond)
-	if got := passes.Load(); got != 0 {
-		t.Errorf("проходов = %d, want 0 (защёлка должна сброситься на паузе)", got)
-	}
-}
-
-// TestCommitterIgnoresEventWhileStopping: во время остановки события не
-// принимаются вовсе.
-func TestCommitterIgnoresEventWhileStopping(t *testing.T) {
-	var passes atomic.Int32
-	c := newNetfilterCommitter(func(ctx context.Context, wake <-chan struct{}) error {
-		passes.Add(1)
-		return nil
-	})
-	c.setState(committerReady)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	c.start(ctx)
-
-	c.stop()
-	c.request()
-	time.Sleep(50 * time.Millisecond)
-	if got := passes.Load(); got != 0 {
-		t.Errorf("проходов = %d, want 0 (в stopping события не исполняются)", got)
-	}
-}
-```
-
-- [ ] **Step 2: Запустить и убедиться, что падают**
-
-```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run Committer . 2>&1 | grep -v "^{" | head -20'
-```
-
-Ожидается: `undefined: c.setStateAndDrain`.
-
-- [ ] **Step 3: Реализовать обработку состояний**
-
-В `src/backend/netfilter_committer.go` заменить блок проверки состояния внутри `run` (сразу после `select`) на:
-
-```go
-		switch c.currentState() {
-		case committerStopping:
-			return
-		case committerStarting:
-			// Модель ещё собирается: событие защёлкиваем и ждём готовности.
-			c.latched.Store(true)
-			continue
-		case committerPaused:
-			// Цепочки сняты намеренно, восстанавливать нечего. Защёлку тоже
-			// сбрасываем: Resume пересоберёт правила из модели, а не из
-			// накопленных событий.
-			c.latched.Store(false)
-			continue
-		}
-```
-
-И добавить метод после `setState`:
-
-```go
-// setStateAndDrain меняет состояние и, если стало ready, немедленно исполняет
-// событие, защёлкнутое во время starting.
-//
-// Уход на паузу сбрасывает защёлку: на паузе правила сняты намеренно, а Resume
-// пересобирает их из модели.
-func (c *netfilterCommitter) setStateAndDrain(s committerState) {
-	if s == committerPaused {
-		c.latched.Store(false)
-	}
-	c.setState(s)
-	if s == committerReady && c.latched.Swap(false) {
-		c.request()
-	}
-}
-```
-
-- [ ] **Step 4: Запустить тесты**
-
-```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -race -run Committer . 2>&1 | grep -E "^(ok|FAIL|---)"'
-```
-
-Ожидается: `ok magitrickle`.
-
-- [ ] **Step 5: Коммит**
-
-```bash
-git add src/backend/netfilter_committer.go src/backend/netfilter_committer_test.go
-git commit -m "feat(netfilter): состояния коммиттера — защёлка на старте, отбрасывание на паузе (mt-yvf)
-
-Признаком готовности не может быть routingActive: он выставляется в начале
-bringUpRouting, до включения групп. Поэтому состояние явное.
-
-В starting событие защёлкивается: отбрасывать нельзя, прошивка могла снести
-уже поднятые группы, а включение последующих их не восстановит. В paused
-событие отбрасывается вместе с защёлкой — правила сняты намеренно, а Resume
-пересобирает их из модели, а не из накопленных событий."
-```
-
----
-
-### Task 4: Откат неуспешного bringUpRouting и сериализация переходов
+### Task 3: Откат неуспешного поднятия роутинга и сериализация переходов
 
 **Files:**
 - Modify: `src/backend/app.go:388-433` (`bringUpRouting`, `bringDownRouting`), `src/backend/app.go:438-457` (`SetEnabled`)
-- Test: `src/backend/app_lifecycle_test.go` (создать)
 
 **Interfaces:**
 - Consumes: ничего из предыдущих задач.
-- Produces: `func (a *App) tearDownRouting()` — снятие роутинга без гейта `routingActive`; поле `lifecycleMu sync.Mutex` в `App`. `bringUpRouting` при ошибке оставляет систему в состоянии «ничего не включено».
+- Produces: `func (a *App) tearDownRouting() error` — снятие роутинга без гейта `routingActive`, возвращает объединённую ошибку; поле `lifecycleMu sync.Mutex` в `App`.
 
-- [ ] **Step 1: Написать падающий тест**
+**Про тесты этой задачи — честно.** Юнит-тест на откат потребовал бы подменяемых `Group` и `netfilterTools.Helper`, которых в коде нет: `Group.Enable` идёт прямо в ipset и iptables. Вводить интерфейсы ради одного теста несоразмерно. Поэтому корректность отката проверяется чтением кода при ревью задачи и полевым сценарием в Task 6, а не юнит-тестом. Фиктивного теста, проверяющего собственноручно взятый мьютекс вместо поведения `SetEnabled`, здесь нет намеренно.
 
-Создать `src/backend/app_lifecycle_test.go`:
+- [ ] **Step 1: Добавить поле мьютекса**
 
-```go
-//go:build testing
-
-package magitrickle
-
-import (
-	"sync"
-	"testing"
-)
-
-// TestSetEnabledIsSerialized: SetEnabled зовётся прямо из HTTP-обработчика,
-// поэтому двойной клик в UI даёт конкурентные вызовы. Без сериализации они
-// гоняются за config.Enabled и routingActive, а с машиной состояний могли бы
-// оставить коммиттер в ready при снятых цепочках.
-//
-// Тест проверяет сам факт взаимного исключения: критическая секция не
-// выполняется двумя горутинами одновременно.
-func TestSetEnabledIsSerialized(t *testing.T) {
-	a := &App{}
-
-	var mu sync.Mutex
-	inside := 0
-	maxInside := 0
-
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			a.lifecycleMu.Lock()
-			defer a.lifecycleMu.Unlock()
-
-			mu.Lock()
-			inside++
-			if inside > maxInside {
-				maxInside = inside
-			}
-			mu.Unlock()
-
-			mu.Lock()
-			inside--
-			mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	if maxInside != 1 {
-		t.Errorf("одновременно внутри критической секции = %d, want 1", maxInside)
-	}
-}
-```
-
-- [ ] **Step 2: Запустить и убедиться, что падает**
-
-```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run SetEnabledIsSerialized . 2>&1 | grep -v "^{" | head -10'
-```
-
-Ожидается: `a.lifecycleMu undefined`.
-
-- [ ] **Step 3: Добавить поле и откат**
-
-В `src/backend/app.go` в структуру `App` добавить поле (рядом с `cfgMu`):
+В `src/backend/app.go` в структуру `App` рядом с `cfgMu` добавить:
 
 ```go
 	// lifecycleMu сериализует переходы жизненного цикла роутинга: поднятие,
-	// снятие и смену состояния коммиттера. SetEnabled вызывается прямо из
+	// снятие и смену режима коммиттера. SetEnabled вызывается прямо из
 	// HTTP-обработчика, поэтому двойной клик в UI без этого лока гоняется за
-	// config.Enabled и routingActive. Порядок: берётся ВЫШЕ cfgMu и commitMu.
+	// config.Enabled и routingActive. Берётся ВЫШЕ cfgMu и commitMu.
 	lifecycleMu sync.Mutex
 ```
+
+- [ ] **Step 2: Вынести снятие роутинга и добавить откат**
 
 Заменить `bringUpRouting` и `bringDownRouting` (строки 388–433) на:
 
@@ -966,20 +964,14 @@ func (a *App) bringUpRouting() error {
 
 	if a.dnsOverrider != nil {
 		if err := a.dnsOverrider.Enable(); err != nil {
-			a.tearDownRouting()
-			a.routingActive.Store(false)
+			a.rollbackFailedBringUp()
 			return fmt.Errorf("failed to override DNS: %w", err)
 		}
 	}
 
 	for _, group := range a.routingGroups() {
 		if err := group.Enable(); err != nil {
-			// Откат обязателен: без него уже включённые группы остаются с
-			// живыми цепочками при routingActive=false. Тогда следующий сброс
-			// таблиц прошивкой снёс бы их, а коммиттер на паузе событие
-			// отбросил бы — правила исчезли бы молча.
-			a.tearDownRouting()
-			a.routingActive.Store(false)
+			a.rollbackFailedBringUp()
 			return fmt.Errorf("failed to enable group %s: %w", group.Name, err)
 		}
 		if err := group.Sync(); err != nil {
@@ -991,34 +983,61 @@ func (a *App) bringUpRouting() error {
 	return nil
 }
 
+// rollbackFailedBringUp снимает то, что успело подняться до ошибки.
+//
+// Без отката уже включённые группы остались бы с живыми цепочками при
+// routingActive=false: следующая перезапись таблиц прошивкой снесла бы их, а
+// коммиттер, находясь к тому моменту на паузе, событие отбросил бы — правила
+// исчезли бы молча, хотя группы считают себя включёнными.
+func (a *App) rollbackFailedBringUp() {
+	if err := a.tearDownRouting(); err != nil {
+		// Здесь уже нечего чинить: снять не удалось, и состояние ядра
+		// неизвестно. Сообщаем как есть — остатки подчистит CleanIPTables при
+		// следующем старте.
+		log.Error().Err(err).Msg("rollback after failed routing bring-up was incomplete")
+	}
+	a.routingActive.Store(false)
+}
+
 // bringDownRouting tears down dnsOverrider and disables all routing groups.
 // Idempotent: no-op when already down.
 func (a *App) bringDownRouting() error {
 	if !a.routingActive.CompareAndSwap(true, false) {
 		return nil
 	}
-	a.tearDownRouting()
+	err := a.tearDownRouting()
 	log.Info().Msg("routing brought down")
-	return nil
+	return err
 }
 
-// tearDownRouting снимает роутинг БЕЗ гейта routingActive. Вынесено из
-// bringDownRouting, чтобы неуспешный bringUpRouting мог откатиться: там гейт
-// уже занят текущим поднятием, и bringDownRouting оказался бы no-op.
-func (a *App) tearDownRouting() {
+// tearDownRouting снимает роутинг БЕЗ гейта routingActive и возвращает всё,
+// что не удалось снять.
+//
+// Вынесено из bringDownRouting, чтобы неуспешный bringUpRouting мог
+// откатиться: там гейт уже занят текущим поднятием, и bringDownRouting
+// оказался бы no-op.
+func (a *App) tearDownRouting() error {
+	var errs []error
+
 	for _, group := range a.routingGroups() {
 		if err := group.Disable(); err != nil {
 			log.Warn().Err(err).Str("group", group.Name).Msg("group disable failed")
+			errs = append(errs, fmt.Errorf("group %s: %w", group.Name, err))
 		}
 	}
 
 	if a.dnsOverrider != nil {
 		if err := a.dnsOverrider.Disable(); err != nil {
 			log.Warn().Err(err).Msg("dnsOverrider disable failed")
+			errs = append(errs, fmt.Errorf("dnsOverrider: %w", err))
 		}
 	}
+
+	return errors.Join(errs...)
 }
 ```
+
+- [ ] **Step 3: Сериализовать SetEnabled**
 
 Заменить `SetEnabled` (строки 438–457) на:
 
@@ -1048,27 +1067,32 @@ func (a *App) SetEnabled(enabled bool) error {
 }
 ```
 
-- [ ] **Step 4: Запустить весь пакет**
+- [ ] **Step 4: Проверить импорт и собрать**
+
+Убедиться, что в `src/backend/app.go` импортирован `errors` (нужен для `errors.Join`). Затем:
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go test -tags testing -race . 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
-Ожидается: `ok magitrickle`.
+Ожидается: сборка без ошибок, все пакеты `ok`.
 
 - [ ] **Step 5: Коммит**
 
 ```bash
-git add src/backend/app.go src/backend/app_lifecycle_test.go
-git commit -m "fix(routing): откат неуспешного bringUpRouting и сериализация переходов (mt-yvf)
+git add src/backend/app.go
+git commit -m "fix(routing): откат неуспешного поднятия и сериализация переходов (mt-yvf)
 
 bringUpRouting при ошибке на N-й группе оставлял включёнными группы до неё —
-при routingActive=false. Следующий сброс таблиц прошивкой снёс бы их цепочки,
-а коммиттер, находясь на паузе, событие отбросил бы: правила исчезли бы молча,
-хотя группы считают себя включёнными. Теперь ошибка откатывает поднятие.
+при routingActive=false. Следующая перезапись таблиц прошивкой снесла бы их
+цепочки, а коммиттер, находясь на паузе, событие отбросил бы: правила исчезли
+бы молча, хотя группы считают себя включёнными. Теперь ошибка откатывает
+поднятие.
 
 Откат идёт через tearDownRouting, вынесенный из bringDownRouting: у последнего
 гейт routingActive уже занят текущим поднятием, и он оказался бы no-op.
+tearDownRouting возвращает ошибки снятия, а не проглатывает их: неполный
+откат должен быть виден в логе, а не выглядеть успехом.
 
 lifecycleMu сериализует переходы: SetEnabled зовётся прямо из HTTP-обработчика,
 и двойной клик в UI гонялся за config.Enabled и routingActive."
@@ -1076,22 +1100,22 @@ lifecycleMu сериализует переходы: SetEnabled зовётся �
 
 ---
 
-### Task 5: Встраивание коммиттера в жизненный цикл приложения
+### Task 4: Встраивание коммиттера в жизненный цикл
 
 **Files:**
-- Modify: `src/backend/start.go:88-180` (создание коммиттера, порядок остановки), `src/backend/start.go:253-275` (`ForceCommitIPTables`)
-- Modify: `src/backend/app.go` (поле `committer`)
+- Modify: `src/backend/app.go` (поле `committer`, синхронизация режима в `SetEnabled`)
+- Modify: `src/backend/start.go:125-180`, `src/backend/start.go:253-275`
 
 **Interfaces:**
-- Consumes: `newNetfilterCommitter`, `start`, `stop`, `setStateAndDrain`, `request`, `committerReady`, `committerPaused` (Tasks 2–3); `CommitWithRetryWake` (Task 1); `lifecycleMu` (Task 4).
-- Produces: `func (a *App) forceCommitIPTablesWake(ctx context.Context, wake <-chan struct{}) error`; `func (a *App) RequestNetfilterCommit()` — публичный метод для HTTP-обработчика (используется в Task 6); поле `a.committer *netfilterCommitter`.
+- Consumes: `startNetfilterCommitter`, `setMode`, `request`, `stop`, режимы (Task 2); `CommitWithRetryWake` (Task 1); `lifecycleMu` (Task 3).
+- Produces: `func (a *App) forceCommitIPTablesWake(ctx context.Context, wake <-chan struct{}) error`; `func (a *App) RequestNetfilterCommit()`; поле `a.committer *netfilterCommitter`.
 
 - [ ] **Step 1: Добавить поле и метод коммита с пробуждением**
 
 В `src/backend/app.go` в структуру `App` добавить:
 
 ```go
-	// committer — единственный писатель правил по событиям netfilter.d.
+	// committer — асинхронный писатель правил по событиям netfilter.d.
 	committer *netfilterCommitter
 ```
 
@@ -1102,8 +1126,9 @@ func (a *App) ForceCommitIPTables(ctx context.Context) error {
 	return a.forceCommitIPTablesWake(ctx, nil)
 }
 
-// forceCommitIPTablesWake — то же, но с каналом пробуждения: пришедшее во время
-// пауз между попытками событие прерывает ожидание и начинает проход заново.
+// forceCommitIPTablesWake — то же, но с каналом пробуждения: событие,
+// пришедшее во время пауз между попытками, прерывает ожидание и начинает
+// проход заново.
 //
 // v6 коммитится даже если упал v4: семейства независимы, и терять оба из-за
 // одного не нужно.
@@ -1129,8 +1154,8 @@ func (a *App) forceCommitIPTablesWake(ctx context.Context, wake <-chan struct{})
 	return errors.Join(errs...)
 }
 
-// RequestNetfilterCommit просит коммиттер переустановить правила. Неблокирующий:
-// вызывается из HTTP-обработчика хука netfilter.d.
+// RequestNetfilterCommit просит коммиттер переустановить правила.
+// Неблокирующий: вызывается из HTTP-обработчика хука netfilter.d.
 func (a *App) RequestNetfilterCommit() {
 	if a.committer != nil {
 		a.committer.request()
@@ -1138,33 +1163,33 @@ func (a *App) RequestNetfilterCommit() {
 }
 ```
 
-- [ ] **Step 2: Создать коммиттер до открытия сокета**
+- [ ] **Step 2: Запустить коммиттер до открытия сокета**
 
-В `src/backend/start.go` вставить ПЕРЕД строкой `httpServer, err := api.SetupHTTP(a, errChan)` (около строки 129):
+В `src/backend/start.go` вставить сразу ПОСЛЕ строки `newCtx, cancel := context.WithCancel(ctx)` и `errChan := make(chan error)` (то есть перед `api.SetupHTTP`):
 
 ```go
-	// Коммиттер создаётся ДО открытия сокетов: хук netfilter.d бьёт в unix-сокет,
-	// и событие может прийти сразу после SetupUnixSocket. До готовности модели он
-	// в состоянии starting — событие защёлкивается, но не исполняется.
+	// Коммиттер запускается ДО открытия сокетов: хук netfilter.d бьёт в
+	// unix-сокет, и событие может прийти сразу после SetupUnixSocket. До
+	// готовности модели он в режиме starting — событие защёлкивается, но не
+	// исполняется.
 	//
 	// defer со stop регистрируется здесь же, чтобы worker не утёк на ранних
 	// return err ниже (LinkByName, RebuildSubscriptionGroups, bringUpRouting).
 	// stop идемпотентен, поэтому явный вызов перед снятием правил ниже не
 	// конфликтует с этим defer.
-	a.committer = newNetfilterCommitter(a.forceCommitIPTablesWake)
-	a.committer.start(newCtx)
+	a.committer = startNetfilterCommitter(newCtx, a.forceCommitIPTablesWake, defaultReconcileDelay)
 	defer a.committer.stop()
 ```
 
 - [ ] **Step 3: Обеспечить порядок остановки**
 
-В `src/backend/start.go` заменить строку `defer func() { _ = a.bringDownRouting() }()` (строка 173) на:
+Заменить строку `defer func() { _ = a.bringDownRouting() }()` (строка 173) на:
 
 ```go
 	// Порядок обязателен: сперва остановить коммиттер и ДОЖДАТЬСЯ его, потом
 	// снимать правила. Иначе teardown снимает цепочки, пока worker их
-	// восстанавливает. Одним defer'ом это не решается: defer, зарегистрированный
-	// при создании коммиттера выше, по LIFO выполнится ПОЗЖЕ этого — поэтому
+	// восстанавливает. Одним defer это не решается: defer, зарегистрированный
+	// при запуске коммиттера выше, по LIFO выполнится ПОЗЖЕ этого — поэтому
 	// stop вызывается явно здесь, а тот defer остаётся страховкой от ранних
 	// выходов. Повторный stop — no-op.
 	defer func() {
@@ -1173,9 +1198,9 @@ func (a *App) RequestNetfilterCommit() {
 	}()
 ```
 
-- [ ] **Step 4: Перевести коммиттер в рабочее состояние после поднятия роутинга**
+- [ ] **Step 4: Перевести коммиттер в рабочий режим под тем же локом, что и поднятие**
 
-В `src/backend/start.go` заменить блок (около строки 166):
+Заменить блок (около строки 166):
 
 ```go
 	if a.config.Enabled {
@@ -1190,20 +1215,26 @@ func (a *App) RequestNetfilterCommit() {
 на:
 
 ```go
+	// lifecycleMu — тот же лок, что держит SetEnabled: сокет уже открыт, и
+	// пользовательский запрос паузы может прийти прямо во время стартового
+	// поднятия.
+	a.lifecycleMu.Lock()
 	if a.config.Enabled {
 		if err := a.bringUpRouting(); err != nil {
+			a.lifecycleMu.Unlock()
 			return err
 		}
-		// Модель собрана — коммиттер может писать. Событие, защёлкнутое во время
-		// старта, исполнится немедленно.
-		a.committer.setStateAndDrain(committerReady)
+		// Модель собрана — коммиттер может писать. Событие, защёлкнутое во
+		// время старта, исполнится немедленно.
+		a.committer.setMode(committerReady)
 	} else {
 		log.Warn().Msg("MagiTrickle started with app.enabled=false — routing is paused")
-		a.committer.setStateAndDrain(committerPaused)
+		a.committer.setMode(committerPaused)
 	}
+	a.lifecycleMu.Unlock()
 ```
 
-- [ ] **Step 5: Синхронизировать состояние коммиттера с паузой и возобновлением**
+- [ ] **Step 5: Синхронизировать режим с паузой и возобновлением**
 
 В `src/backend/app.go` в `SetEnabled` (внутри `lifecycleMu`) заменить блок переключения на:
 
@@ -1213,19 +1244,20 @@ func (a *App) RequestNetfilterCommit() {
 			return err
 		}
 		if a.committer != nil {
-			a.committer.setStateAndDrain(committerReady)
+			a.committer.setMode(committerReady)
 		}
 	} else {
 		if a.committer != nil {
-			// Сначала паузим коммиттер, потом снимаем правила: иначе он успел бы
-			// восстановить то, что снимает teardown.
-			a.committer.setStateAndDrain(committerPaused)
+			// Сначала паузим коммиттер — setMode возвращается только после
+			// того, как worker принял режим, поэтому нового прохода уже не
+			// начнётся. Иначе он восстановил бы то, что снимает teardown.
+			a.committer.setMode(committerPaused)
 		}
 		_ = a.bringDownRouting()
 	}
 ```
 
-- [ ] **Step 6: Собрать и прогнать все тесты**
+- [ ] **Step 6: Собрать и прогнать всё**
 
 ```bash
 wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
@@ -1239,29 +1271,31 @@ wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd 
 git add src/backend/start.go src/backend/app.go
 git commit -m "feat(netfilter): встроить коммиттер в жизненный цикл демона (mt-yvf)
 
-Коммиттер создаётся до открытия unix-сокета: хук бьёт именно туда, и событие
+Коммиттер запускается до открытия unix-сокета: хук бьёт именно туда, и событие
 может прийти раньше, чем собрана модель — до готовности оно защёлкивается.
+
+Стартовое поднятие роутинга взято под lifecycleMu: сокет уже открыт, и запрос
+паузы может прийти прямо во время него.
 
 Порядок остановки соблюдён явно: stop коммиттера и ожидание worker'а идут
 ПЕРЕД снятием правил. Одним defer это не решается — зарегистрированный при
-создании коммиттера выполнился бы по LIFO позже снятия, поэтому он остаётся
-только страховкой от ранних выходов из Start, а рабочий путь зовёт stop явно.
-Идемпотентность делает двойной вызов безопасным.
+запуске коммиттера выполнился бы по LIFO позже снятия, поэтому он остаётся
+страховкой от ранних выходов из Start, а рабочий путь зовёт stop явно.
 
-Пауза переводит коммиттер в paused ДО снятия правил, иначе он успел бы
-восстановить то, что снимает teardown."
+Пауза переводит коммиттер в paused ДО снятия правил, и setMode возвращается
+только после того, как worker принял режим."
 ```
 
 ---
 
-### Task 6: Тонкий хук
+### Task 5: Тонкий хук
 
 **Files:**
 - Modify: `src/backend/api/v1/handlers.go:47-70` (`NetfilterDHook`)
 - Modify: `src/backend/app/magitrickle.go` (интерфейс `Main`)
 
 **Interfaces:**
-- Consumes: `a.RequestNetfilterCommit()` (Task 5).
+- Consumes: `a.RequestNetfilterCommit()` (Task 4).
 - Produces: метод `RequestNetfilterCommit()` в интерфейсе `app.Main`.
 
 - [ ] **Step 1: Добавить метод в интерфейс**
@@ -1290,10 +1324,11 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 
 	// Только сигнал, без ожидания. Прошивка шлёт событие на КАЖДУЮ таблицу,
 	// поэтому одна её перезапись даёт несколько событий подряд — коммиттер
-	// схлопывает их в один проход.
+	// схлопывает их.
 	//
-	// Результат наружу не отдаём: вызывающему shell-скрипту с ним делать нечего,
-	// а socat всё равно закрывает соединение сразу после отправки.
+	// Ответ 200 здесь означает «событие принято», а НЕ «правила восстановлены»:
+	// вызывающему shell-скрипту всё равно нечего делать с результатом, а socat
+	// закрывает соединение сразу после отправки.
 	h.app.RequestNetfilterCommit()
 }
 ```
@@ -1312,7 +1347,7 @@ wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd 
 git add src/backend/api/v1/handlers.go src/backend/app/magitrickle.go
 git commit -m "feat(netfilter): хук netfilter.d только сигналит коммиттеру (mt-yvf)
 
-Обработчик больше не ждёт применения правил: он шлёт неблокирующий сигнал и
+Обработчик больше не ждёт применения правил: шлёт неблокирующий сигнал и
 отвечает сразу. Прошивка присылает событие на каждую таблицу, и схлопывание в
 коммиттере превращает серию в один проход вместо трёх независимых.
 
@@ -1322,12 +1357,14 @@ git commit -m "feat(netfilter): хук netfilter.d только сигналит
 
 ---
 
-### Task 7: Проверка на живом роутере
+### Task 6: Полевая проверка на роутере
 
-**Files:** нет (полевая проверка).
+**Files:** нет (проверка на живой системе).
 
 **Interfaces:**
 - Consumes: собранный пакет со всеми предыдущими задачами.
+
+**Осторожно:** это рабочий роутер с 38 группами. Шаг 3 намеренно снимает правила, поэтому перед ним делается снимок, а после — сверка с ним. Если что-то пойдёт не так, правила возвращает `/opt/etc/init.d/S99magitrickle restart`.
 
 - [ ] **Step 1: Собрать пакет**
 
@@ -1345,17 +1382,25 @@ powershell -File scripts/update-router-package.ps1
 
 Ожидается: `Deploy confirmed: magitrickled alive (pid=...) 45s after install.`
 
-- [ ] **Step 3: Проверить восстановление после полного сноса**
-
-Снести все наши цепочки и джампы в mangle и вызвать хук так, как это делает ndm:
+- [ ] **Step 3: Снять снимок состояния ДО проверки**
 
 ```bash
-ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; for c in $(iptables -t mangle -S PREROUTING | grep -o "MT_[0-9a-f]*" | sort -u); do iptables -t mangle -D PREROUTING ! -i lo -j $c 2>/dev/null; done; for c in $(iptables -t mangle -S | grep "^-N MT_" | awk "{print \$2}"); do iptables -t mangle -F $c 2>/dev/null; iptables -t mangle -X $c 2>/dev/null; done; echo "снесено: $(iptables -t mangle -S | grep -c "^-N MT_")"; type=iptables table=mangle sh /opt/etc/ndm/netfilter.d/100-magitrickle; sleep 2; echo "восстановлено: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"'
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; iptables-save > /opt/root/tmp/mt-before.rules; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"'
 ```
 
-Ожидается: после сноса `0`, после хука число цепочек и джампов совпадает с числом до сноса (на текущем проде — 38/38).
+Записать числа — с ними сверяется восстановление. Снимок `/opt/root/tmp/mt-before.rules` остаётся страховкой.
 
-- [ ] **Step 4: Проверить, что хук отвечает мгновенно**
+- [ ] **Step 4: Проверить восстановление после полного сноса mangle**
+
+```bash
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; for c in $(iptables -t mangle -S PREROUTING | grep -o "MT_[0-9a-f]*" | sort -u); do iptables -t mangle -D PREROUTING ! -i lo -j $c 2>/dev/null; done; for c in $(iptables -t mangle -S | grep "^-N MT_" | awk "{print \$2}"); do iptables -t mangle -F $c 2>/dev/null; iptables -t mangle -X $c 2>/dev/null; done; echo "после сноса: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_")"; type=iptables table=mangle sh /opt/etc/ndm/netfilter.d/100-magitrickle; sleep 3; echo "после хука: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"'
+```
+
+Ожидается: после сноса — заметно меньше, после хука — числа из шага 3.
+
+Если восстановление НЕ произошло: `ssh <ROUTER_SSH> '/opt/etc/init.d/S99magitrickle restart'` и разбираться, не продолжая.
+
+- [ ] **Step 5: Проверить, что хук отвечает мгновенно**
 
 ```bash
 ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; S=$(date +%s%N); type=iptables table=mangle sh /opt/etc/ndm/netfilter.d/100-magitrickle; E=$(date +%s%N); echo "хук вернулся за $(( (E-S)/1000000 )) мс"'
@@ -1363,18 +1408,26 @@ ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; S=$(date +%s%N); type=ip
 
 Ожидается: единицы миллисекунд — обработчик больше не ждёт применения правил. До изменения это же измерение давало 34–79 мс.
 
-- [ ] **Step 5: Проверить, что демон пережил и правила целы**
+- [ ] **Step 6: Проверить схлопывание серии событий**
 
 ```bash
-ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; echo "pid: $(pidof magitrickled)"; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"; curl -s -o /dev/null -w "проверка связи: %{http_code}\n" -m 8 https://1.1.1.1/'
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; for t in mangle nat filter; do type=iptables table=$t sh /opt/etc/ndm/netfilter.d/100-magitrickle; done; sleep 3; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"'
 ```
 
-Ожидается: демон жив, mangle и nat полные, связь есть.
+Ожидается: числа совпадают со снимком из шага 3, дублей джампов нет — три события подряд не сломали состояние.
 
-- [ ] **Step 6: Записать результат в задачу**
+- [ ] **Step 7: Проверить итоговое здоровье и убрать снимок**
 
 ```bash
-bd comment mt-yvf "Полевая проверка на <ROUTER_IP>: <вставить фактические числа из шагов 3-5>"
+ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; echo "pid: $(pidof magitrickled)"; echo "mangle: цепочек=$(iptables -t mangle -S | grep -c "^-N MT_") джампов=$(iptables -t mangle -S PREROUTING | grep -c "j MT_")"; echo "nat: цепочек=$(iptables -t nat -S | grep -c "^-N MT_") джампов=$(iptables -t nat -S PREROUTING | grep -c "j MT_")"; curl -s -o /dev/null -w "проверка связи: %{http_code}\n" -m 8 https://1.1.1.1/; rm -f /opt/root/tmp/mt-before.rules'
+```
+
+Ожидается: демон жив, mangle и nat совпадают со снимком, связь есть.
+
+- [ ] **Step 8: Записать результат в задачу**
+
+```bash
+bd comment mt-yvf "Полевая проверка на <ROUTER_IP>: <фактические числа из шагов 3-7>"
 ```
 
 ---
@@ -1383,24 +1436,28 @@ bd comment mt-yvf "Полевая проверка на <ROUTER_IP>: <встав
 
 **Покрытие спеки:**
 
-| Требование спеки | Задача |
+| Требование спеки | Где |
 |---|---|
 | Компонент committer, горутина, канал ёмкостью 1 | Task 2 |
-| Схлопывание («не более одного отложенного прохода») | Task 2 |
-| Прерывание ожидания между попытками, сброс бюджета | Task 1 |
-| Собственный контекст, не `r.Context()` | Task 5 (worker на `newCtx`), уже частично в `2d5efe4` |
-| Машина состояний `starting`/`ready`/`paused`/`stopping` | Task 3 |
-| Защёлкивание события в `starting` | Task 3 |
-| Отбрасывание события в `paused` | Task 3 |
-| Откат неуспешного `bringUpRouting` | Task 4 |
-| Мьютекс переходов | Task 4 |
-| Порядок остановки, идемпотентный stop, два пути вызова | Tasks 2 и 5 |
-| Канал не закрывается | Task 2 |
-| Отложенный reconcile внутри `select` | Task 2 |
-| Тонкий хук | Task 6 |
-| `commitMu`, таймаут exec | сделано в mt-7sa |
-| Восстановление после полного flush | Task 7 |
+| Схлопывание («не более одного отложенного прохода») | Task 2, `TestCommitterFoldsRequests` |
+| Событие во время прохода не теряется | Task 2, `TestCommitterDoesNotLoseEventDuringPass` |
+| Прерывание ожидания между попытками, сброс бюджета | Task 1, `TestCommitWithRetryWakeRestartsOnEvent` |
+| Собственный контекст, не `r.Context()` | Task 4 (worker на `newCtx`), сделано в `2d5efe4` |
+| Машина состояний | Task 2 |
+| Защёлкивание события в `starting` | Task 2, `TestCommitterLatchesEventWhileStarting` |
+| Отбрасывание события в `paused` | Task 2, `TestCommitterDiscardsEventWhilePaused`, `TestCommitterDropsLatchOnPause` |
+| Reconcile внутри `select`, сброс при `paused`/`stopping` | Task 2, `TestCommitterSchedulesReconcileAfterFailure`, `TestCommitterReconcileDoesNotSurvivePause` |
+| Порядок остановки, идемпотентный stop | Task 2 (`TestCommitterStopIsIdempotent`, `TestCommitterStopWaitsForWorker`, `TestCommitterAfterStopIsInert`) + Task 4 |
+| Канал не закрывается | Task 2, `TestCommitterAfterStopIsInert` |
+| Откат неуспешного `bringUpRouting` | Task 3 — **кодом и ревью, без юнит-теста** (см. ниже) |
+| Мьютекс переходов | Task 3 + Task 4 (стартовое поднятие под тем же локом) — **кодом и ревью** |
+| Сериализация писателей | сделано в mt-7sa, тест `TestCommitMuSerialisesCommits` |
+| Сходимость: повторный проход, восстановление после flush | Task 1, `TestCommitIsIdempotent`, `TestCommitRecoversAfterFullFlush` |
+| Тонкий хук | Task 5 |
+| Полевая проверка | Task 6 |
 
-**Не покрыто намеренно:** позиция джампов (mt-rrg, отдельная задача); `drop-then-stage` (спека обосновывает отказ); build tag платформы (не нужен); тесты конкуренции коммиттера с `PortRemap`/`Group.Enable` через блокирующий fake — вынесены за скоуп, так как требуют доступа к внутренностям `netfilterTools` из пакета `magitrickle`; сериализация обеспечивается `commitMu`, уже покрытым тестом в mt-7sa.
+**Что покрыто НЕ тестами и почему.** Откат `bringUpRouting` и удержание `lifecycleMu` в `SetEnabled` юнит-тестами не покрыты: `Group.Enable` и `dnsOverrider` работают напрямую с ipset и iptables, подменяемых интерфейсов в коде нет, а `SetEnabled` вдобавок пишет конфиг на диск. Вводить интерфейсы ради двух тестов несоразмерно задаче. Эти места проверяются чтением кода при ревью задачи и полевым сценарием Task 6. Тест, который проверял бы собственноручно взятый мьютекс вместо поведения `SetEnabled`, здесь не пишется — он ничего не доказывает.
 
-**Согласованность типов:** `commit func(ctx context.Context, wake <-chan struct{}) error` — сигнатура совпадает в Task 2 (поле), Task 5 (`forceCommitIPTablesWake`). `setStateAndDrain` вводится в Task 3 и используется в Task 5. `CommitWithRetryWake(ctx, wake)` вводится в Task 1 и используется в Task 5.
+**Не покрыто намеренно:** позиция джампов (mt-rrg, отдельная задача); `drop-then-stage` (спека обосновывает отказ, тесты сходимости в Task 1 подтверждают основание); build tag платформы (не нужен — хук ставится только в сборки `entware_kn`).
+
+**Согласованность типов:** `commit func(ctx context.Context, wake <-chan struct{}) error` — одинаково в Task 2 (поле, конструктор) и Task 4 (`forceCommitIPTablesWake`). `setMode`/`request`/`stop` вводятся в Task 2 и используются в Task 4. `CommitWithRetryWake(ctx, wake)` вводится в Task 1, используется в Task 4. `tearDownRouting() error` вводится в Task 3, используется только внутри `app.go`.

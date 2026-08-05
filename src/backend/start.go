@@ -126,6 +126,18 @@ func (a *App) Start(ctx context.Context) (err error) {
 	defer cancel()
 	errChan := make(chan error)
 
+	// Коммиттер запускается ДО открытия сокетов: хук netfilter.d бьёт в
+	// unix-сокет, и событие может прийти сразу после SetupUnixSocket. До
+	// готовности модели он в режиме starting — событие защёлкивается, но не
+	// исполняется.
+	//
+	// defer со stop регистрируется здесь же, чтобы worker не утёк на ранних
+	// return err ниже (LinkByName, RebuildSubscriptionGroups, bringUpRouting).
+	// stop идемпотентен, поэтому явный вызов перед снятием правил ниже не
+	// конфликтует с этим defer.
+	a.committer = startNetfilterCommitter(newCtx, a.forceCommitIPTablesWake, defaultReconcileDelay)
+	defer a.committer.stop()
+
 	httpServer, err := api.SetupHTTP(a, errChan)
 	if err != nil {
 		return fmt.Errorf("setup http fail: %w", err)
@@ -163,14 +175,40 @@ func (a *App) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to prepare subscription groups: %w", err)
 	}
 
+	// lifecycleMu — тот же лок, что держит SetEnabled: сокет уже открыт, и
+	// пользовательский запрос паузы может прийти прямо во время стартового
+	// поднятия.
+	a.lifecycleMu.Lock()
 	if a.config.Enabled {
 		if err := a.bringUpRouting(); err != nil {
+			a.lifecycleMu.Unlock()
 			return err
 		}
+		// Модель собрана — коммиттер может писать. Событие, защёлкнутое во
+		// время старта, исполнится немедленно.
+		a.committer.setMode(committerReady)
 	} else {
 		log.Warn().Msg("MagiTrickle started with app.enabled=false — routing is paused")
+		a.committer.setMode(committerPaused)
 	}
-	defer func() { _ = a.bringDownRouting() }()
+	a.lifecycleMu.Unlock()
+	// Порядок обязателен: сперва остановить коммиттер и ДОЖДАТЬСЯ его, потом
+	// снимать правила. Иначе teardown снимает цепочки, пока worker их
+	// восстанавливает. Одним defer это не решается: defer, зарегистрированный
+	// при запуске коммиттера выше, по LIFO выполнится ПОЗЖЕ этого — поэтому
+	// stop вызывается явно здесь, а тот defer остаётся страховкой от ранних
+	// выходов. Повторный stop — no-op.
+	//
+	// lifecycleMu здесь обязателен: HTTP- и unix-серверы закрываются defer'ами,
+	// зарегистрированными ВЫШЕ, а значит по LIFO — уже ПОСЛЕ этого снятия.
+	// Без лока запрос SetEnabled(true) мог бы поднять правила обратно, когда
+	// коммиттер уже остановлен и восстанавливать их некому.
+	defer func() {
+		a.committer.stop()
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
+		_ = a.bringDownRouting()
+	}()
 
 	if a.config.DNSProxy.PersistCache {
 		// Финальный синхронный флеш снапшота — ЗДЕСЬ, а не рядом со StartPersist:
@@ -242,15 +280,17 @@ func (a *App) startStaticSubnetReassertLoop(ctx context.Context) {
 	}()
 }
 
-// ForceCommitIPTables переустанавливает наши правила. Вызывается по хуку
-// netfilter.d, то есть ровно после того, как прошивка переписала таблицу
-// целиком — самая гонкоопасная точка. Поэтому запись идёт с повтором и
-// перечитыванием состояния (mt-pfo): одна проигранная гонка иначе означала бы
-// отсутствие правил до СЛЕДУЮЩЕГО события, а его может не быть минутами.
-//
-// v6 коммитится даже если упал v4: семейства независимы, и потерять оба из-за
-// одного не нужно.
 func (a *App) ForceCommitIPTables(ctx context.Context) error {
+	return a.forceCommitIPTablesWake(ctx, nil)
+}
+
+// forceCommitIPTablesWake — то же, но с каналом пробуждения: событие,
+// пришедшее во время пауз между попытками, прерывает ожидание и начинает
+// проход заново.
+//
+// v6 коммитится даже если упал v4: семейства независимы, и терять оба из-за
+// одного не нужно.
+func (a *App) forceCommitIPTablesWake(ctx context.Context, wake <-chan struct{}) error {
 	if a.nfHelper == nil {
 		return nil
 	}
@@ -258,18 +298,26 @@ func (a *App) ForceCommitIPTables(ctx context.Context) error {
 	var errs []error
 
 	if a.nfHelper.IPTables4 != nil {
-		if err := a.nfHelper.IPTables4.CommitWithRetry(ctx); err != nil {
+		if err := a.nfHelper.IPTables4.CommitWithRetryWake(ctx, wake); err != nil {
 			errs = append(errs, fmt.Errorf("failed to commit iptables rules: %w", err))
 		}
 	}
 
 	if a.nfHelper.IPTables6 != nil {
-		if err := a.nfHelper.IPTables6.CommitWithRetry(ctx); err != nil {
+		if err := a.nfHelper.IPTables6.CommitWithRetryWake(ctx, wake); err != nil {
 			errs = append(errs, fmt.Errorf("failed to commit ip6tables rules: %w", err))
 		}
 	}
 
 	return errors.Join(errs...)
+}
+
+// RequestNetfilterCommit просит коммиттер переустановить правила.
+// Неблокирующий: вызывается из HTTP-обработчика хука netfilter.d.
+func (a *App) RequestNetfilterCommit() {
+	if a.committer != nil {
+		a.committer.request()
+	}
 }
 
 func (a *App) setupLogging() {

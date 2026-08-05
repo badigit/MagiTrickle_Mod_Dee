@@ -76,6 +76,9 @@ type App struct {
 	// HTTP-обработчика, поэтому двойной клик в UI без этого лока гоняется за
 	// config.Enabled и routingActive. Берётся ВЫШЕ cfgMu и commitMu.
 	lifecycleMu sync.Mutex
+
+	// committer — асинхронный писатель правил по событиям netfilter.d.
+	committer *netfilterCommitter
 }
 
 // New создаёт новый экземпляр App
@@ -497,7 +500,16 @@ func (a *App) SetEnabled(enabled bool) error {
 		if err := a.bringUpRouting(); err != nil {
 			return err
 		}
+		if a.committer != nil {
+			a.committer.setMode(committerReady)
+		}
 	} else {
+		if a.committer != nil {
+			// Сначала паузим коммиттер — setMode возвращается только после
+			// того, как worker принял режим, поэтому нового прохода уже не
+			// начнётся. Иначе он восстановил бы то, что снимает teardown.
+			a.committer.setMode(committerPaused)
+		}
 		bringDownErr = a.bringDownRouting()
 	}
 

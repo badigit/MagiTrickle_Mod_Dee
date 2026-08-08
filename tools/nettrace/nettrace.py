@@ -415,6 +415,26 @@ def is_public(ip):
 
 
 # ------------------------------------------------------------------- main loop
+def _stop_capture(cap, timeout=6):
+    """ETW ProcessTrace can lag after CloseTrace (real-time buffer flush) — join it
+    off-thread with a deadline and hard-exit if it overruns, so Ctrl+C never hangs."""
+    done = threading.Event()
+
+    def _worker():
+        try:
+            cap.stop()
+        except Exception:
+            pass
+        done.set()
+
+    threading.Thread(target=_worker, daemon=True).start()
+    if not done.wait(timeout):
+        sys.stderr.write(f"{C_GRAY}(ETW session still flushing — exiting){C_RESET}\n")
+        sys.stderr.flush()
+        sys.stdout.flush()
+        os._exit(0)
+
+
 def run(args):
     if not ctypes.windll.shell32.IsUserAnAdmin():
         print(f"{C_YELLOW}WARNING: not elevated — ETW kernel session needs Administrator. "
@@ -497,7 +517,8 @@ def run(args):
     except KeyboardInterrupt:
         print(f"\n{C_GRAY}Ctrl+C — stopping...{C_RESET}")
     finally:
-        cap.stop()
+        # Summary/push FIRST so results appear instantly on Ctrl+C — the ETW stop
+        # below can lag while ProcessTrace flushes real-time buffers.
         if tsv:
             tsv.close()
         _summary(counts, mt, geo)
@@ -514,6 +535,8 @@ def run(args):
                     aws = make_aws(args)
                     subnet_map, labels = aggregate(recs, args.agg, args.min_count, args.promote16, aws)
                     push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide, labels)
+
+        _stop_capture(cap)
 
 
 def _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv):

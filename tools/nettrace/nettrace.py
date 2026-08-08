@@ -189,7 +189,7 @@ class GeoResolver:
                 u = f"https://api.ipinfo.io/lite/{ip}?token={self.token}"
             else:
                 u = f"https://ipinfo.io/{ip}/json"
-            d = requests.get(u, timeout=4).json()
+            d = requests.get(u, timeout=6).json()
             if d.get("org"): parts.append(str(d["org"]))
             a = d.get("asn"); asname = d.get("as_name")
             if a or asname:
@@ -202,7 +202,7 @@ class GeoResolver:
         # bgpkit: real announced prefix (better CIDR than /24 guess) + asn/cc fallback
         prefix = ""
         try:
-            b = requests.get(f"https://api.bgpkit.com/v3/utils/ip?ip={ip}", timeout=4).json()
+            b = requests.get(f"https://api.bgpkit.com/v3/utils/ip?ip={ip}", timeout=6).json()
             asninfo = b.get("asn") or {}
             prefix = str(asninfo.get("prefix") or "")
             if not asn and asninfo.get("asn"):

@@ -71,6 +71,8 @@ Color = MagiTrickle intent (not actual path — see limitation):
 | `--no-udp` / `--no-tcp` | restrict protocol |
 | `--no-geo` | skip ASN/country lookup |
 | `--tsv PATH` | also write TSV log |
+| `--append` | append to existing `--tsv` instead of overwriting |
+| `--resolve-hostnames` | reverse-DNS (PTR) each destination IP |
 | `--no-port-swap` | do not `ntohs()` ports (use if ports look wrong) |
 | `--debug-fields` | print raw ETW field names of the first event |
 
@@ -119,6 +121,8 @@ python nettrace.py -n RocketLeague --for 120 --push-to-group RL --confirm
 Only **uncovered** (not already in MT), **non-RU**, IPv4 candidates are pushed; existing
 rules are deduped; subnets wider than `/16` are refused unless `--allow-wide`. This
 replaces `mt_add_missing.ps1`.
+
+This fully replaces `network_watch.ps1` + `mt_add_missing.ps1` (TCP-only, UDP-blind).
 
 ## Limitations (v1)
 

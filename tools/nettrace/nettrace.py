@@ -218,6 +218,26 @@ class GeoResolver:
         return out
 
 
+# ------------------------------------------------------------------- reverse DNS
+class HostResolver:
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self._cache = {}
+
+    def name(self, ip):
+        if not self.enabled:
+            return ""
+        if ip in self._cache:
+            return self._cache[ip]
+        host = ""
+        try:
+            host = socket.gethostbyaddr(ip)[0]
+        except (OSError, socket.herror, socket.gaierror):
+            pass
+        self._cache[ip] = host
+        return host
+
+
 # ------------------------------------------------------------------- ETW capture
 class Capture:
     """Runs an ETW session in a background thread, pushes normalized events."""
@@ -352,10 +372,14 @@ def run(args):
     q = Queue()
     cap = Capture(q, args.tcp, args.udp, not args.no_port_swap, args.debug_fields)
 
+    hostres = HostResolver(args.resolve_hostnames)
+
     tsv = None
     if args.tsv:
-        tsv = open(args.tsv, "w", encoding="utf-8")
-        tsv.write("Timestamp\tProtocol\tProcess\tPID\tAddress\tPort\tMT_Groups\tMT_Ipset\tDetails\n")
+        append = args.append and os.path.exists(args.tsv) and os.path.getsize(args.tsv) > 0
+        tsv = open(args.tsv, "a" if append else "w", encoding="utf-8")
+        if not append:
+            tsv.write("Timestamp\tProtocol\tProcess\tPID\tAddress\tPort\tMT_Groups\tMT_Ipset\tDetails\n")
 
     counts = defaultdict(int)          # key -> hit count
     seen = set()
@@ -400,7 +424,7 @@ def run(args):
                 mt.annotate(list(dict.fromkeys(new_ips)))
 
             for proto, pid, ip, port, hits, is_new in rows:
-                _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, tsv)
+                _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv)
             if tsv:
                 tsv.flush()
     except KeyboardInterrupt:
@@ -424,13 +448,18 @@ def run(args):
                     push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide)
 
 
-def _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, tsv):
+def _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv):
     pname = procs.name(pid) or f"pid{pid}"
     ts = datetime.now().strftime("%H:%M:%S")
     mt_tag, mt_hit = (mt.tag(ip) if mt else ("", False))
     meta = geo.info(ip) if is_new else {"summary": "", "country": geo._cache.get(ip, {}).get("country", "")}
     detail = meta["summary"]
     country = meta.get("country", "")
+
+    if is_new and hostres:
+        host = hostres.name(ip)
+        if host:
+            detail = f"{host} | {detail}" if detail else host
 
     if country == "RU":
         color = C_GRAY
@@ -666,6 +695,8 @@ def build_parser():
     p.add_argument("--udp", dest="udp", action="store_true", default=True)
     p.add_argument("--no-udp", dest="udp", action="store_false")
     p.add_argument("--tsv", help="also write TSV to this path")
+    p.add_argument("--append", action="store_true", help="append to existing --tsv instead of overwriting")
+    p.add_argument("--resolve-hostnames", action="store_true", help="reverse-DNS each destination IP (PTR)")
     p.add_argument("--no-port-swap", action="store_true", help="do not ntohs() ETW ports (use if ports look wrong)")
     p.add_argument("--debug-fields", action="store_true", help="print raw ETW field names of first event and exit-safe")
     # --- learn / push ---

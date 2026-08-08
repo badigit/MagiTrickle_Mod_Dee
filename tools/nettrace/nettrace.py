@@ -167,6 +167,73 @@ class MTClient:
         return r.json()
 
 
+# ------------------------------------------------------------------- AWS ranges
+class AWSRanges:
+    """Official AWS ip-ranges.json — maps an IP to its real regional prefix.
+    Cached locally with a TTL so we don't re-download every run."""
+    URL = "https://ip-ranges.amazonaws.com/ip-ranges.json"
+
+    def __init__(self, cache_path, ttl_days=7, ec2_only=False, regions=None, refresh=False):
+        self.ec2_only = ec2_only
+        self.regions = set(regions) if regions else None
+        self._nets = []  # (ip_network, region, service)
+        self.loaded = False
+        self._load(cache_path, ttl_days, refresh)
+
+    def _load(self, path, ttl_days, refresh):
+        data = None
+        fresh = (path and os.path.exists(path)
+                 and (time.time() - os.path.getmtime(path) < ttl_days * 86400))
+        if fresh and not refresh:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                data = None
+        if data is None:
+            try:
+                data = requests.get(self.URL, timeout=20).json()
+                if path:
+                    with open(path, "w", encoding="utf-8") as f:
+                        json.dump(data, f)
+            except Exception:
+                if path and os.path.exists(path):  # fall back to stale cache
+                    try:
+                        with open(path, encoding="utf-8") as f:
+                            data = json.load(f)
+                    except Exception:
+                        data = {"prefixes": []}
+                else:
+                    data = {"prefixes": []}
+        for p in data.get("prefixes", []):
+            try:
+                self._nets.append((ipaddress.ip_network(p["ip_prefix"]),
+                                   p.get("region", ""), p.get("service", "")))
+            except ValueError:
+                pass
+        self.loaded = bool(self._nets)
+
+    def lookup(self, ip):
+        """Most-specific covering prefix -> (cidr, region, service), or None."""
+        try:
+            a = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        best = None
+        for net, region, service in self._nets:
+            if a.version != net.version or a not in net:
+                continue
+            if self.ec2_only and service != "EC2":
+                continue
+            if self.regions and region not in self.regions:
+                continue
+            if best is None or net.prefixlen > best[0].prefixlen:
+                best = (net, region, service)
+        if not best:
+            return None
+        return str(best[0]), best[1], best[2]
+
+
 # ------------------------------------------------------------------- geo / ASN
 class GeoResolver:
     def __init__(self, token, enabled):
@@ -444,8 +511,9 @@ def run(args):
                 if mt is None:
                     print(f"{C_YELLOW}--push-to-group needs MagiTrickle URL{C_RESET}")
                 else:
-                    subnet_map = aggregate(recs, args.agg, args.min_count, args.promote16)
-                    push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide)
+                    aws = make_aws(args)
+                    subnet_map, labels = aggregate(recs, args.agg, args.min_count, args.promote16, aws)
+                    push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide, labels)
 
 
 def _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv):
@@ -567,9 +635,10 @@ def save_learn(path, recs):
     return store
 
 
-def aggregate(records, mode="cidr", min_count=1, promote16_at=0):
-    """records: dict ip->{count,prefix,cc,covered}. Returns dict subnet->[ips] for
-    uncovered, non-RU, IPv4 candidates seen >= min_count times."""
+def aggregate(records, mode="cidr", min_count=1, promote16_at=0, aws=None):
+    """records: dict ip->{count,prefix,cc,covered}. Returns (subnet_map, labels):
+    subnet->[ips] and subnet->rule-name (labels may be empty) for uncovered,
+    non-RU, IPv4 candidates seen >= min_count times."""
     cands = []
     for ip, e in records.items():
         if e.get("covered") or e.get("count", 0) < min_count or e.get("cc") == "RU":
@@ -582,6 +651,19 @@ def aggregate(records, mode="cidr", min_count=1, promote16_at=0):
         cands.append((ip, e))
 
     out = defaultdict(list)
+    labels = {}
+
+    if mode == "aws":
+        for ip, e in cands:
+            m = aws.lookup(ip) if aws else None
+            if m:
+                pfx, region, svc = m
+                out[pfx].append(ip)
+                labels[pfx] = f"AWS {region}" + (f" {svc}" if svc and svc != "AMAZON" else "")
+            else:  # non-AWS -> fall back to /24
+                out[str(ipaddress.ip_network(ip + "/24", strict=False))].append(ip)
+        return dict(out), labels
+
     if mode == "cidr":
         for ip, e in cands:
             pfx = e.get("prefix") or str(ipaddress.ip_network(ip + "/24", strict=False))
@@ -590,11 +672,11 @@ def aggregate(records, mode="cidr", min_count=1, promote16_at=0):
             except ValueError:
                 net = ipaddress.ip_network(ip + "/24", strict=False)
             out[str(net)].append(ip)
-        return dict(out)
+        return dict(out), labels
     if mode == "32":
         for ip, _ in cands:
             out[f"{ip}/32"].append(ip)
-        return dict(out)
+        return dict(out), labels
 
     mask = 16 if mode == "16" else 24
     for ip, _ in cands:
@@ -615,11 +697,12 @@ def aggregate(records, mode="cidr", min_count=1, promote16_at=0):
         for n24, ipl in out.items():
             if n24 not in used:
                 result[n24] = ipl
-        return result
-    return dict(out)
+        return result, labels
+    return dict(out), labels
 
 
-def push_subnets(mt, group, subnet_map, confirm, allow_wide=False):
+def push_subnets(mt, group, subnet_map, confirm, allow_wide=False, labels=None):
+    labels = labels or {}
     if not subnet_map:
         print("nothing to add (no uncovered candidates).")
         return
@@ -629,7 +712,8 @@ def push_subnets(mt, group, subnet_map, confirm, allow_wide=False):
 
     wide = [s for s in subnet_map if ipaddress.ip_network(s).prefixlen < 16]
     if wide and not allow_wide:
-        print(f"  {C_YELLOW}refusing subnets wider than /16 without --allow-wide: {', '.join(wide)}{C_RESET}")
+        print(f"  {C_YELLOW}refusing subnets wider than /16 without --allow-wide "
+              f"(AWS regions are wide by design): {', '.join(wide)}{C_RESET}")
         subnet_map = {s: v for s, v in subnet_map.items() if s not in wide}
 
     to_add = [s for s in sorted(subnet_map) if s not in existing]
@@ -639,7 +723,8 @@ def push_subnets(mt, group, subnet_map, confirm, allow_wide=False):
         return
     print(f"  {len(to_add)} new subnet(s){'' if confirm else ' (dry-run)'}:")
     for s in to_add:
-        print(f"    {'+ ' if confirm else '  '}{s}   ({len(subnet_map[s])} ip)")
+        lbl = labels.get(s)
+        print(f"    {'+ ' if confirm else '  '}{s:20} ({len(subnet_map[s])} ip){'  ' + lbl if lbl else ''}")
     if skipped:
         print(f"  ({skipped} already present, skipped)")
     if not confirm:
@@ -648,11 +733,28 @@ def push_subnets(mt, group, subnet_map, confirm, allow_wide=False):
     ok = 0
     for s in to_add:
         try:
-            mt.add_subnet_rule(gid, s, f"nettrace {s}")
+            mt.add_subnet_rule(gid, s, labels.get(s) or f"nettrace {s}")
             ok += 1
         except Exception as ex:
             print(f"    {C_YELLOW}FAILED {s}: {ex}{C_RESET}")
     print(f"\n  {C_GREEN}added {ok}/{len(to_add)} subnets to '{gname}'. ipset synced.{C_RESET}")
+
+
+def _aws_cache_path():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "aws-ip-ranges.cache.json")
+
+
+def make_aws(args):
+    """Build an AWSRanges instance if --agg aws, else None."""
+    if args.agg != "aws":
+        return None
+    regions = [r.strip() for r in args.aws_regions.split(",")] if args.aws_regions else None
+    aws = AWSRanges(_aws_cache_path(), ec2_only=args.aws_ec2_only,
+                    regions=regions, refresh=args.aws_refresh)
+    if not aws.loaded:
+        print(f"{C_YELLOW}AWS ranges unavailable (download failed, no cache) — "
+              f"'aws' mode falls back to /24.{C_RESET}")
+    return aws
 
 
 def do_import(args):
@@ -670,14 +772,16 @@ def do_import(args):
         mt.annotate(ips[i:i + 100])
     for ip in data:
         data[ip]["covered"] = mt.is_covered(ip)
-    subnet_map = aggregate(data, args.agg, args.min_count, args.promote16)
+    aws = make_aws(args)
+    subnet_map, labels = aggregate(data, args.agg, args.min_count, args.promote16, aws)
     if not args.push_to_group:
         print(f"Aggregated {sum(len(v) for v in subnet_map.values())} uncovered ip -> "
               f"{len(subnet_map)} subnet(s) (mode={args.agg}). No --push-to-group given:")
         for s in sorted(subnet_map):
-            print(f"  {s}  ({len(subnet_map[s])} ip)")
+            lbl = labels.get(s)
+            print(f"  {s:20} ({len(subnet_map[s])} ip){'  ' + lbl if lbl else ''}")
         return
-    push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide)
+    push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide, labels)
 
 
 def build_parser():
@@ -705,10 +809,13 @@ def build_parser():
     g.add_argument("--import", dest="import_file", metavar="FILE", help="PUSH MODE: read a learn store and add uncovered subnets to MT (no capture)")
     g.add_argument("--push-to-group", metavar="GROUP", help="add uncovered subnets to this MT group (name or id); with capture = one-shot, with --import = from file")
     g.add_argument("--confirm", action="store_true", help="actually push (default is dry-run)")
-    g.add_argument("--agg", choices=["cidr", "24", "16", "32"], default="cidr", help="aggregation: cidr=real BGP prefix (default), or /24 /16 /32")
+    g.add_argument("--agg", choices=["cidr", "aws", "24", "16", "32"], default="cidr", help="aggregation: cidr=BGP prefix (default), aws=official AWS regional prefix, or /24 /16 /32")
     g.add_argument("--min-count", type=int, default=1, help="ignore endpoints seen fewer than N times")
     g.add_argument("--promote16", type=int, default=0, metavar="N", help="with --agg 24: collapse a /16 when >=N distinct /24 seen")
-    g.add_argument("--allow-wide", action="store_true", help="permit subnets wider than /16 (off by default)")
+    g.add_argument("--allow-wide", action="store_true", help="permit subnets wider than /16 (needed for --agg aws/cidr)")
+    g.add_argument("--aws-ec2-only", action="store_true", help="--agg aws: only EC2-service prefixes (skip S3/CloudFront ranges)")
+    g.add_argument("--aws-regions", metavar="R1,R2", help="--agg aws: restrict to these AWS regions (e.g. eu-central-1,us-east-1)")
+    g.add_argument("--aws-refresh", action="store_true", help="--agg aws: force re-download of the AWS ip-ranges cache")
     return p
 
 

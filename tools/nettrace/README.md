@@ -113,10 +113,25 @@ python nettrace.py -n RocketLeague --for 120 --push-to-group RL --confirm
 | `--import FILE` | push mode: add uncovered subnets from a store to MT (no capture) |
 | `--push-to-group G` | target MT group (name or id) |
 | `--confirm` | actually push (default is **dry-run**) |
-| `--agg cidr\|24\|16\|32` | `cidr` = real BGP prefix (default), or fixed mask |
+| `--agg cidr\|aws\|24\|16\|32` | `cidr` = BGP prefix (default), `aws` = official AWS regional prefix, or fixed mask |
 | `--min-count N` | ignore endpoints seen fewer than N times (drop noise) |
 | `--promote16 N` | with `--agg 24`: collapse a /16 when ≥N distinct /24 seen |
-| `--allow-wide` | permit subnets wider than /16 (off by default) |
+| `--allow-wide` | permit subnets wider than /16 (needed for `aws`/`cidr`) |
+| `--aws-ec2-only` | `--agg aws`: only EC2 prefixes (skip S3/CloudFront) |
+| `--aws-regions R1,R2` | `--agg aws`: restrict to these regions |
+| `--aws-refresh` | `--agg aws`: force re-download of the cached ip-ranges |
+
+### Aggregation modes
+
+- **`cidr`** (default) — the IP's real BGP-announced prefix (via bgpkit). Accurate to
+  how the owner routes it, but can be wide (`/14` for AWS).
+- **`aws`** — looks the IP up in AWS's official `ip-ranges.json` and uses the **regional
+  prefix**, naming the rule after the region (`AWS eu-central-1`). The file is cached
+  locally (`aws-ip-ranges.cache.json`, 7-day TTL). Best when you want to tunnel whole
+  AWS game regions reliably — pair with `--allow-wide` (regions are large by design) and
+  optionally `--aws-ec2-only` / `--aws-regions`. Non-AWS IPs fall back to `/24`.
+- **`24` / `16` / `32`** — fixed mask. `--agg 24 --promote16 2` is the narrow-but-adaptive
+  middle ground (see below).
 
 Only **uncovered** (not already in MT), **non-RU**, IPv4 candidates are pushed; existing
 rules are deduped; subnets wider than `/16` are refused unless `--allow-wide`. This

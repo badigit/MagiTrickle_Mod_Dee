@@ -81,6 +81,13 @@ type App struct {
 
 	// committer — асинхронный писатель правил по событиям netfilter.d.
 	committer *netfilterCommitter
+
+	// shuttingDown взводится teardown'ом в Start и запрещает поднимать роутинг
+	// заново: после teardown снимать его уже некому. Читается и пишется только
+	// под lifecycleMu — тем же локом, что держит SetEnabled, поэтому гейт
+	// закрывает и уже принятый в обработку HTTP-запрос, которому закрытие
+	// листенеров не мешает (mt-kd1).
+	shuttingDown bool
 }
 
 // New создаёт новый экземпляр App
@@ -542,6 +549,14 @@ func (a *App) tearDownRouting() error {
 func (a *App) SetEnabled(enabled bool) error {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+
+	// Демон уже гасится: правила сняты, второго teardown не будет. Поднять их
+	// сейчас — значит уйти с живыми DNS-remap и TPROXY, и трафик до перезапуска
+	// сервиса пойдёт в остановленный процесс (mt-kd1). Снятие при этом
+	// разрешаем: оно совпадает с тем, что делает teardown.
+	if a.shuttingDown && enabled {
+		return errors.New("daemon is shutting down")
+	}
 
 	if a.config.Enabled == enabled && a.routingActive.Load() == enabled {
 		return nil

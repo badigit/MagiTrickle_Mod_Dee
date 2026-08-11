@@ -65,6 +65,14 @@ type IPSet struct {
 	ipsetName string
 }
 
+// StaticSetName4/StaticSetName6 — имена зеркала статических подсетей группы
+// (<name>_s4 / <name>_s6). Зеркало содержит ТОЛЬКО permanent-записи из
+// subnet/subnet6-правил и служит негативным матчем для ipset-refresh правила
+// TPROXY (mt-bq8): пакет, попавший в широкую статическую подсеть, не должен
+// материализоваться в основном сете отдельной /32-/128-записью.
+func (r *IPSet) StaticSetName4() string { return r.ipsetName + "_s4" }
+func (r *IPSet) StaticSetName6() string { return r.ipsetName + "_s6" }
+
 func (r *IPSet) AddIPv4Subnet(subnet IPv4Subnet, timeout IPSetTimeout) error {
 	r.locker.Lock()
 	defer r.locker.Unlock()
@@ -161,9 +169,15 @@ func (r *IPSet) ListIPv4Subnets() (map[IPv4Subnet]IPSetTimeout, error) {
 		return nil, nil
 	}
 
+	return listSubnets4(r.ipsetName + "_4")
+}
+
+// listSubnets4 читает произвольный IPv4-сет по имени (основной или зеркало
+// статических подсетей).
+func listSubnets4(setName string) (map[IPv4Subnet]IPSetTimeout, error) {
 	addresses := make(map[IPv4Subnet]IPSetTimeout)
 
-	list, err := netlink.IpsetList(r.ipsetName + "_4")
+	list, err := netlink.IpsetList(setName)
 	if err != nil {
 		return nil, err
 	}
@@ -199,9 +213,14 @@ func (r *IPSet) ListIPv6Subnets() (map[IPv6Subnet]IPSetTimeout, error) {
 		return nil, nil
 	}
 
+	return listSubnets6(r.ipsetName + "_6")
+}
+
+// listSubnets6 — IPv6-близнец listSubnets4.
+func listSubnets6(setName string) (map[IPv6Subnet]IPSetTimeout, error) {
 	addresses := make(map[IPv6Subnet]IPSetTimeout)
 
-	list, err := netlink.IpsetList(r.ipsetName + "_6")
+	list, err := netlink.IpsetList(setName)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +247,92 @@ func (r *IPSet) ListIPv6Subnets() (map[IPv6Subnet]IPSetTimeout, error) {
 	return addresses, nil
 }
 
+// SyncStaticSubnets приводит зеркало статических подсетей к переданному списку:
+// недостающие добавляет как permanent (timeout=0), лишние — удаляет. Список
+// маленький (subnet-правила группы), листинг зеркала дешёвый.
+//
+// Зеркало используется только как негативный матч в правиле ipset-refresh
+// (mt-bq8) — трафик по нему не маршрутизируется, поэтому расхождение на один
+// цикл sync безопасно.
+func (r *IPSet) SyncStaticSubnets(v4 []IPv4Subnet, v6 []IPv6Subnet) error {
+	r.locker.Lock()
+	defer r.locker.Unlock()
+
+	if !r.enabled.Load() {
+		return nil
+	}
+
+	var errs []error
+
+	want4 := make(map[IPv4Subnet]struct{}, len(v4))
+	for _, subnet := range v4 {
+		want4[subnet] = struct{}{}
+	}
+	have4, err := listSubnets4(r.StaticSetName4())
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to list static mirror %s: %w", r.StaticSetName4(), err))
+	}
+	for subnet := range want4 {
+		if _, ok := have4[subnet]; ok {
+			continue
+		}
+		if err := netlink.IpsetAdd(r.StaticSetName4(), &netlink.IPSetEntry{
+			IP:      subnet.Address[:],
+			CIDR:    subnet.CIDR,
+			Timeout: zeroTimeout,
+			Replace: true,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to mirror %s: %w", subnet.String(), err))
+		}
+	}
+	for subnet := range have4 {
+		if _, ok := want4[subnet]; ok {
+			continue
+		}
+		if err := netlink.IpsetDel(r.StaticSetName4(), &netlink.IPSetEntry{
+			IP:   subnet.Address[:],
+			CIDR: subnet.CIDR,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to unmirror %s: %w", subnet.String(), err))
+		}
+	}
+
+	want6 := make(map[IPv6Subnet]struct{}, len(v6))
+	for _, subnet := range v6 {
+		want6[subnet] = struct{}{}
+	}
+	have6, err := listSubnets6(r.StaticSetName6())
+	if err != nil {
+		errs = append(errs, fmt.Errorf("failed to list static mirror %s: %w", r.StaticSetName6(), err))
+	}
+	for subnet := range want6 {
+		if _, ok := have6[subnet]; ok {
+			continue
+		}
+		if err := netlink.IpsetAdd(r.StaticSetName6(), &netlink.IPSetEntry{
+			IP:      subnet.Address[:],
+			CIDR:    subnet.CIDR,
+			Timeout: zeroTimeout,
+			Replace: true,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to mirror %s: %w", subnet.String(), err))
+		}
+	}
+	for subnet := range have6 {
+		if _, ok := want6[subnet]; ok {
+			continue
+		}
+		if err := netlink.IpsetDel(r.StaticSetName6(), &netlink.IPSetEntry{
+			IP:   subnet.Address[:],
+			CIDR: subnet.CIDR,
+		}); err != nil {
+			errs = append(errs, fmt.Errorf("failed to unmirror %s: %w", subnet.String(), err))
+		}
+	}
+
+	return errors.Join(errs...)
+}
+
 func (r *IPSet) ipsetCreate() error {
 	err := netlink.IpsetCreate(r.ipsetName+"_4", "hash:net", netlink.IpsetCreateOptions{
 		Timeout: func(i uint32) *uint32 { return &i }(300),
@@ -245,18 +350,41 @@ func (r *IPSet) ipsetCreate() error {
 		return fmt.Errorf("failed to create ipset: %w", err)
 	}
 
+	// Зеркало статических подсетей: дефолтный timeout 0 = записи вечные, как и
+	// сами subnet-правила. Сет создаётся всегда, даже если статических правил у
+	// группы нет — пустой сет просто никогда не матчится, а правило TPROXY
+	// остаётся одним и тем же независимо от конфига группы.
+	err = netlink.IpsetCreate(r.StaticSetName4(), "hash:net", netlink.IpsetCreateOptions{
+		Timeout: func(i uint32) *uint32 { return &i }(0),
+		Family:  unix.AF_INET,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create static mirror ipset: %w", err)
+	}
+
+	err = netlink.IpsetCreate(r.StaticSetName6(), "hash:net", netlink.IpsetCreateOptions{
+		Timeout: func(i uint32) *uint32 { return &i }(0),
+		Family:  unix.AF_INET6,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create static mirror ipset: %w", err)
+	}
+
 	return nil
 }
 
 func (r *IPSet) ipsetDestroy() error {
 	var errs []error
-	err := netlink.IpsetDestroy(r.ipsetName + "_4")
-	if err != nil && !os.IsNotExist(err) {
-		errs = append(errs, err)
-	}
-	err = netlink.IpsetDestroy(r.ipsetName + "_6")
-	if err != nil && !os.IsNotExist(err) {
-		errs = append(errs, err)
+	for _, name := range []string{
+		r.ipsetName + "_4",
+		r.ipsetName + "_6",
+		r.StaticSetName4(),
+		r.StaticSetName6(),
+	} {
+		err := netlink.IpsetDestroy(name)
+		if err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
 	}
 	if errs != nil {
 		return fmt.Errorf("failed to destroy ipsets: %w", errors.Join(errs...))

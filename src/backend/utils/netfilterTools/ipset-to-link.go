@@ -44,6 +44,10 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 		return nil
 	}
 
+	// Зеркала статических подсетей (<set>_s4/_s6) создаются IPSet'ом для всех
+	// групп единообразно, но в direct/interface-режимах не используются: правила
+	// ipset-refresh (mt-bq8) здесь нет, поэтому на них никто не ссылается —
+	// они просто пустые.
 	ipsetName := r.ipset.ipsetName
 	if ipt.Proto() == iptables.ProtocolIPv4 {
 		ipsetName += "_4"

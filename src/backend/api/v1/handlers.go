@@ -55,10 +55,15 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 		Str("type", req.Type).
 		Str("table", req.Table).
 		Msg("received netfilter.d event")
-	err = h.app.ForceCommitIPTables()
-	if err != nil {
-		log.Error().Err(err).Msg("error fixing iptables after netfilter.d")
-	}
+
+	// Только сигнал, без ожидания. Прошивка шлёт событие на КАЖДУЮ таблицу,
+	// поэтому одна её перезапись даёт несколько событий подряд — коммиттер
+	// схлопывает их.
+	//
+	// Ответ 200 здесь означает «событие принято», а НЕ «правила восстановлены»:
+	// вызывающему shell-скрипту всё равно нечего делать с результатом, а socat
+	// закрывает соединение сразу после отправки.
+	h.app.RequestNetfilterCommit()
 }
 
 // GetClientRouting returns the source networks excluded from MagiTrickle.

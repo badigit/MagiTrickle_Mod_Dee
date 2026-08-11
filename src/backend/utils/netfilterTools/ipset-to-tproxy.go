@@ -47,10 +47,12 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 	}
 
 	ipsetName := r.ipset.ipsetName
+	staticSetName := r.ipset.StaticSetName4()
 	if ipt.Proto() == iptables.ProtocolIPv4 {
 		ipsetName += "_4"
 	} else {
 		ipsetName += "_6"
+		staticSetName = r.ipset.StaticSetName6()
 	}
 
 	portStr := strconv.Itoa(int(r.port))
@@ -108,10 +110,18 @@ func (r *IPSetToTProxy) insertIPTablesRules(ipt *iptables.IPTables) error {
 	// (для established трафика это правило не матчится: он не NEW). Правило первым
 	// в цепочке, покрывает и TCP, и UDP (mangle идёт до nat REDIRECT). Мёртвую
 	// (истёкшую) запись не воскрешает — match по сету не срабатывает.
+	//
+	// Негативный матч по зеркалу статических подсетей (mt-bq8): SET-target кладёт
+	// в сет КОНКРЕТНЫЙ dst-адрес пакета, поэтому совпадение с широкой подсетью
+	// (route-all 0.0.0.0/1, 10.0.0.0/8) материализовало бы отдельную /32 на каждый
+	// новый destination — до maxelem 65536, после чего DNS-add начинает падать и
+	// новые домены текут direct. Адресам внутри статической подсети продление не
+	// нужно: подсеть permanent и покрывает их сама.
 	if r.refreshTimeout > 0 {
 		err = ipt.Append("mangle", r.chainName,
 			"-m", "conntrack", "--ctstate", "NEW",
 			"-m", "set", "--match-set", ipsetName, "dst",
+			"-m", "set", "!", "--match-set", staticSetName, "dst",
 			"-j", "SET", "--add-set", ipsetName, "dst", "--exist", "--timeout", strconv.Itoa(int(r.refreshTimeout)),
 		)
 		if err != nil {

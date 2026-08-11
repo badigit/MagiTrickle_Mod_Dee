@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -139,51 +140,120 @@ func (a *App) Start(ctx context.Context) (err error) {
 	defer cancel()
 	errChan := make(chan error)
 
-	httpServer, err := api.SetupHTTP(a, errChan)
-	if err != nil {
-		return fmt.Errorf("setup http fail: %w", err)
-	}
-	defer httpServer.Close()
+	// Коммиттер запускается ДО открытия сокетов: хук netfilter.d бьёт в
+	// unix-сокет, и событие может прийти сразу после SetupUnixSocket. До
+	// готовности модели он в режиме starting — событие защёлкивается, но не
+	// исполняется.
+	//
+	// defer со stop регистрируется здесь же, чтобы worker не утёк на ранних
+	// return err ниже (LinkByName, RebuildSubscriptionGroups, bringUpRouting).
+	// stop идемпотентен, поэтому явный вызов перед снятием правил ниже не
+	// конфликтует с этим defer.
+	a.committer = startNetfilterCommitter(newCtx, a.forceCommitIPTablesWake, defaultReconcileDelay)
+	defer a.committer.stop()
 
-	unixServer, err := api.SetupUnixSocket(a, errChan)
-	if err != nil {
-		return fmt.Errorf("setup unix socket fail: %w", err)
-	}
-	defer unixServer.Close()
-
-	a.startDNSListeners(newCtx, errChan)
-
+	var httpServer, unixServer *http.Server
 	var interfaceAddrs []netlink.Addr
-	for _, linkName := range a.config.Link {
-		link, err := netlink.LinkByName(linkName)
+
+	// lifecycleMu — тот же лок, что держит SetEnabled. Секция расширена НАЗАД
+	// относительно старого варианта: сокеты (HTTP и unix) открываются здесь
+	// же, и с этого момента снаружи уже может прийти SetEnabled, который
+	// гоняется за a.dnsOverrider и routingGroups() — а они собираются НИЖЕ,
+	// вплоть до bringUpRouting. Не покрой лок это окно — SetEnabled(true),
+	// пришедший между открытием сокета и сборкой групп, мог бы выставить
+	// routingActive=true раньше времени, и собственный bringUpRouting ниже
+	// стал бы no-op по CAS: DNS-ремап 53 не установился бы вовсе.
+	//
+	// Участок обёрнут в IIFE с defer Unlock, чтобы лок освобождался на всех
+	// путях выхода — включая панику и ранние return err ниже (LinkByName,
+	// RebuildSubscriptionGroups, bringUpRouting). IIFE возвращает ошибку,
+	// вызывающий код пробрасывает её из Start.
+	lifecycleErr := func() error {
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
+
+		var err error
+		httpServer, err = api.SetupHTTP(a, errChan)
 		if err != nil {
-			return fmt.Errorf("failed to find link %s: %w", linkName, err)
+			return fmt.Errorf("setup http fail: %w", err)
 		}
-		linkAddrList, err := netlink.AddrList(link, nl.FAMILY_ALL)
+
+		unixServer, err = api.SetupUnixSocket(a, errChan)
 		if err != nil {
-			return fmt.Errorf("failed to list address of interface %s: %w", linkName, err)
+			return fmt.Errorf("setup unix socket fail: %w", err)
 		}
-		interfaceAddrs = append(interfaceAddrs, linkAddrList...)
-	}
 
-	// Always prepare dnsOverrider object so Pause/Resume can toggle it later,
-	// even if the config initially has Enabled=false.
-	if !a.config.DNSProxy.DisableRemap53 {
-		a.dnsOverrider = a.nfHelper.PortRemap("DNSOR", 53, a.config.DNSProxy.Host.Port, interfaceAddrs)
-	}
+		a.startDNSListeners(newCtx, errChan)
 
-	if err := a.RebuildSubscriptionGroups(); err != nil {
-		return fmt.Errorf("failed to prepare subscription groups: %w", err)
-	}
-
-	if a.config.Enabled {
-		if err := a.bringUpRouting(); err != nil {
-			return err
+		for _, linkName := range a.config.Link {
+			link, err := netlink.LinkByName(linkName)
+			if err != nil {
+				return fmt.Errorf("failed to find link %s: %w", linkName, err)
+			}
+			linkAddrList, err := netlink.AddrList(link, nl.FAMILY_ALL)
+			if err != nil {
+				return fmt.Errorf("failed to list address of interface %s: %w", linkName, err)
+			}
+			interfaceAddrs = append(interfaceAddrs, linkAddrList...)
 		}
-	} else {
-		log.Warn().Msg("MagiTrickle started with app.enabled=false — routing is paused")
+
+		// Always prepare dnsOverrider object so Pause/Resume can toggle it later,
+		// even if the config initially has Enabled=false.
+		if !a.config.DNSProxy.DisableRemap53 {
+			a.dnsOverrider = a.nfHelper.PortRemap("DNSOR", 53, a.config.DNSProxy.Host.Port, interfaceAddrs)
+		}
+
+		if err := a.RebuildSubscriptionGroups(); err != nil {
+			return fmt.Errorf("failed to prepare subscription groups: %w", err)
+		}
+
+		if a.config.Enabled {
+			if err := a.bringUpRouting(); err != nil {
+				return err
+			}
+			// Модель собрана — коммиттер может писать. Событие, защёлкнутое во
+			// время старта, исполнится немедленно.
+			a.committer.setMode(committerReady)
+		} else {
+			log.Warn().Msg("MagiTrickle started with app.enabled=false — routing is paused")
+			a.committer.setMode(committerPaused)
+		}
+		return nil
+	}()
+
+	// defer Close регистрируем СРАЗУ после вызова IIFE и ДО проверки ошибки:
+	// сервер должен закрыться и при успехе (обычный teardown ниже), и при
+	// частичном отказе (например unixServer не поднялся, а httpServer уже
+	// слушает) — как и в исходном коде, где defer шёл сразу за созданием.
+	if httpServer != nil {
+		defer httpServer.Close()
 	}
-	defer func() { _ = a.bringDownRouting() }()
+	if unixServer != nil {
+		defer unixServer.Close()
+	}
+	if lifecycleErr != nil {
+		return lifecycleErr
+	}
+	// Порядок обязателен: сперва остановить коммиттер и ДОЖДАТЬСЯ его, потом
+	// снимать правила. Иначе teardown снимает цепочки, пока worker их
+	// восстанавливает. Одним defer это не решается: defer, зарегистрированный
+	// при запуске коммиттера выше, по LIFO выполнится ПОЗЖЕ этого — поэтому
+	// stop вызывается явно здесь, а тот defer остаётся страховкой от ранних
+	// выходов. Повторный stop — no-op.
+	//
+	// lifecycleMu здесь сериализует снятие правил с конкурентным SetEnabled:
+	// пока лок держится, SetEnabled(true) не может поднять правила обратно
+	// между stop() коммиттера и bringDownRouting() ниже. Полностью окно до
+	// закрытия сокетов это НЕ закрывает: HTTP- и unix-серверы закрываются
+	// defer'ами, зарегистрированными ВЫШЕ, а значит по LIFO — уже ПОСЛЕ
+	// снятия правил и отпускания лока, так что узкий зазор между Unlock и
+	// фактическим закрытием сокетов остаётся.
+	defer func() {
+		a.committer.stop()
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
+		_ = a.bringDownRouting()
+	}()
 
 	if a.config.DNSProxy.PersistCache {
 		// Финальный синхронный флеш снапшота — ЗДЕСЬ, а не рядом со StartPersist:
@@ -255,26 +325,44 @@ func (a *App) startStaticSubnetReassertLoop(ctx context.Context) {
 	}()
 }
 
-func (a *App) ForceCommitIPTables() error {
+func (a *App) ForceCommitIPTables(ctx context.Context) error {
+	return a.forceCommitIPTablesWake(ctx, nil)
+}
+
+// forceCommitIPTablesWake — то же, но с каналом пробуждения: событие,
+// пришедшее во время пауз между попытками, прерывает ожидание и начинает
+// проход заново.
+//
+// v6 коммитится даже если упал v4: семейства независимы, и терять оба из-за
+// одного не нужно.
+func (a *App) forceCommitIPTablesWake(ctx context.Context, wake <-chan struct{}) error {
 	if a.nfHelper == nil {
 		return nil
 	}
 
+	var errs []error
+
 	if a.nfHelper.IPTables4 != nil {
-		err := a.nfHelper.IPTables4.Commit()
-		if err != nil {
-			return fmt.Errorf("failed to commit iptables rules: %w", err)
+		if err := a.nfHelper.IPTables4.CommitWithRetryWake(ctx, wake); err != nil {
+			errs = append(errs, fmt.Errorf("failed to commit iptables rules: %w", err))
 		}
 	}
 
 	if a.nfHelper.IPTables6 != nil {
-		err := a.nfHelper.IPTables6.Commit()
-		if err != nil {
-			return fmt.Errorf("failed to commit iptables rules: %w", err)
+		if err := a.nfHelper.IPTables6.CommitWithRetryWake(ctx, wake); err != nil {
+			errs = append(errs, fmt.Errorf("failed to commit ip6tables rules: %w", err))
 		}
 	}
 
-	return nil
+	return errors.Join(errs...)
+}
+
+// RequestNetfilterCommit просит коммиттер переустановить правила.
+// Неблокирующий: вызывается из HTTP-обработчика хука netfilter.d.
+func (a *App) RequestNetfilterCommit() {
+	if a.committer != nil {
+		a.committer.request()
+	}
 }
 
 func (a *App) setupLogging() {

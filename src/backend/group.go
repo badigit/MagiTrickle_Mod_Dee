@@ -301,7 +301,20 @@ func (g *Group) sync() error {
 			Msg("group sync completed")
 	}()
 
-	newIPv4SubnetList, newIPv6SubnetList := g.desiredSubnets(time.Now())
+	// Статические subnet-правила — permanent-записи (timeout=0). Парсинг вынесен
+	// в staticSubnetsFromRules, чтобы переиспользовать в ReassertStaticSubnets.
+	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
+	g.updateStaticHostCache(v4Static, v6Static)
+	if err := g.ipset.SyncStaticSubnets(v4Static, v6Static); err != nil {
+		// Не фатально: зеркало влияет только на ipset-refresh (mt-bq8), а не на
+		// маршрутизацию. Хуже расхождение, чем прерванный sync всей группы.
+		log.Error().
+			Err(err).
+			Str("group", g.Name).
+			Msg("failed to sync static-subnet mirror")
+	}
+
+	newIPv4SubnetList, newIPv6SubnetList := g.desiredSubnets(time.Now(), v4Static, v6Static)
 
 	oldIPv4SubnetList, err := g.listIPv4Subnets()
 	if err != nil {
@@ -385,17 +398,15 @@ func (g *Group) sync() error {
 }
 
 // desiredSubnets собирает целевое состояние ipset-сетов группы на момент now:
-// статические subnet-правила (permanent-записи, timeout=nil) плюс
-// DNS-производные host-записи из recordsCache с остаточным TTL. Попутно
-// обновляет кэш статических host-членов. Вызывать под g.locker.
-func (g *Group) desiredSubnets(now time.Time) (map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout, map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout) {
+// переданные статические subnet-правила (permanent-записи, timeout=nil) плюс
+// DNS-производные host-записи из recordsCache с остаточным TTL. Чистая функция:
+// парсинг правил, кэш host-членов и зеркало _s4/_s6 — забота вызывающего
+// (sync), поэтому её можно звать в тестах без живого ipset. Вызывать под
+// g.locker.
+func (g *Group) desiredSubnets(now time.Time, v4Static []netfilterTools.IPv4Subnet, v6Static []netfilterTools.IPv6Subnet) (map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout, map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout) {
 	newIPv4SubnetList := make(map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout)
 	newIPv6SubnetList := make(map[netfilterTools.IPv6Subnet]netfilterTools.IPSetTimeout)
 
-	// Статические subnet-правила — permanent-записи (timeout=0). Парсинг вынесен
-	// в staticSubnetsFromRules, чтобы переиспользовать в ReassertStaticSubnets.
-	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
-	g.updateStaticHostCache(v4Static, v6Static)
 	for _, subnet := range v4Static {
 		newIPv4SubnetList[subnet] = nil
 	}
@@ -578,6 +589,12 @@ func (g *Group) ReassertStaticSubnets() error {
 	v4, v6 := staticSubnetsFromRules(g.Rules)
 	g.updateStaticHostCache(v4, v6)
 	var errs []error
+	// Зеркало статических подсетей держим в актуальном состоянии здесь же: у
+	// route-all групп без подписок sync() почти не вызывается, а зеркало —
+	// единственная защита от раздувания сета мусорными /32 (mt-bq8).
+	if err := g.ipset.SyncStaticSubnets(v4, v6); err != nil {
+		errs = append(errs, fmt.Errorf("failed to sync static-subnet mirror: %w", err))
+	}
 	for _, subnet := range v4 {
 		if err := g.addIPv4Subnet(subnet, nil); err != nil {
 			errs = append(errs, fmt.Errorf("failed to reassert %s: %w", subnet.String(), err))

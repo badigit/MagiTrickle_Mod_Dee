@@ -289,7 +289,7 @@ func TestInsertIPTablesRulesRefresh(t *testing.T) {
 	mangleRules := fake.GetRules("mangle", "MT_TEST")
 	expectedMangle := [][]string{
 		{"-m", "set", "--match-set", "client_bypass_4", "src", "-j", "RETURN"},
-		{"-m", "conntrack", "--ctstate", "NEW", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "SET", "--add-set", "mt_test_4", "dst", "--exist", "--timeout", "86400"},
+		{"-m", "conntrack", "--ctstate", "NEW", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "set", "!", "--match-set", "mt_test_s4", "dst", "-j", "SET", "--add-set", "mt_test_4", "dst", "--exist", "--timeout", "86400"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "MARK", "--set-xmark", "100/100"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-m", "socket", "-j", "ACCEPT"},
 		{"-p", "udp", "-m", "set", "--match-set", "mt_test_4", "dst", "-j", "TPROXY", "--on-port", "5001", "--tproxy-mark", "100/100"},
@@ -306,6 +306,97 @@ func TestInsertIPTablesRulesRefresh(t *testing.T) {
 	}
 	if !reflect.DeepEqual(natRules, expectedNat) {
 		t.Errorf("nat chain rules mismatch.\nExpected: %v\nGot:      %v", expectedNat, natRules)
+	}
+}
+
+// TestRefreshExcludesStaticSubnets — регресс на mt-bq8.
+//
+// Правило продления делает `-j SET --add-set <set> dst`, а SET-target берёт
+// КОНКРЕТНЫЙ destination IP из пакета. Если пакет совпал с широкой статической
+// подсетью (0.0.0.0/1 у route-all, 10.0.0.0/8 и т.п.), ядро материализует этот
+// IP отдельной /32-записью в том же hash:net сете. Широкая подсеть при этом не
+// меняется, а мусорные /32 копятся на КАЖДЫЙ новый destination — до maxelem
+// (дефолт 65536), после чего IpsetAdd для новых DNS-записей начинает падать и
+// трафик к новым доменам уходит direct мимо прокси.
+//
+// Лечение: негативный матч по зеркалу статических подсетей (<set>_s4/_s6).
+// Адрес внутри статической подсети продлевать не нужно — она permanent
+// (timeout=0) и покрывает его сама, поэтому пропуск такого пакета мимо
+// SET-target ничего не ломает.
+func TestRefreshExcludesStaticSubnets(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		proto     iptables.Protocol
+		chain     string
+		mainSet   string
+		staticSet string
+	}{
+		{"ipv4", iptables.ProtocolIPv4, "MT_TEST", "mt_test_4", "mt_test_s4"},
+		{"ipv6", iptables.ProtocolIPv6, "MT_TEST", "mt_test_6", "mt_test_s6"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := iptables.NewFakeIPTables(tc.proto)
+			ipt := iptables.NewIPTables(fake)
+			fake.SetInitialRules("nat", "PREROUTING", nil)
+			fake.SetInitialRules("mangle", "PREROUTING", nil)
+			ipt.RegisterChainPatch("nat", "PREROUTING")
+			ipt.RegisterChainPatch("mangle", "PREROUTING")
+
+			nh := &Helper{}
+			if tc.proto == iptables.ProtocolIPv4 {
+				nh.IPTables4 = ipt
+			} else {
+				nh.IPTables6 = ipt
+			}
+			r := &IPSetToTProxy{
+				chainName:      tc.chain,
+				port:           5001,
+				mark:           100,
+				table:          100,
+				ipset:          &IPSet{ipsetName: "mt_test"},
+				nh:             nh,
+				refreshTimeout: 86400,
+			}
+
+			if err := r.insertIPTablesRules(ipt); err != nil {
+				t.Fatalf("insertIPTablesRules failed: %v", err)
+			}
+			if err := ipt.Commit(); err != nil {
+				t.Fatalf("Commit failed: %v", err)
+			}
+
+			rules := fake.GetRules("mangle", tc.chain)
+			if len(rules) == 0 {
+				t.Fatalf("mangle chain %s is empty", tc.chain)
+			}
+			// Ищем refresh-правило по признаку (-j SET), а не по индексу: перед
+			// ним в цепочке может стоять bypass клиентов (mt-67u). Порядок
+			// правил целиком проверяет TestInsertIPTablesRulesRefresh.
+			var got []string
+			for _, rule := range rules {
+				for _, arg := range rule {
+					if arg == "--add-set" {
+						got = rule
+						break
+					}
+				}
+				if got != nil {
+					break
+				}
+			}
+			if got == nil {
+				t.Fatalf("no refresh (-j SET --add-set) rule found in mangle chain %s: %v", tc.chain, rules)
+			}
+			want := []string{
+				"-m", "conntrack", "--ctstate", "NEW",
+				"-m", "set", "--match-set", tc.mainSet, "dst",
+				"-m", "set", "!", "--match-set", tc.staticSet, "dst",
+				"-j", "SET", "--add-set", tc.mainSet, "dst", "--exist", "--timeout", "86400",
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Errorf("refresh rule must exclude static-subnet mirror.\nWant: %v\nGot:  %v", want, got)
+			}
+		})
 	}
 }
 

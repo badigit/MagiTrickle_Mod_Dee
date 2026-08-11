@@ -36,7 +36,8 @@ func TestDesiredSubnetsHostKeysCanonical(t *testing.T) {
 		app: app,
 	}
 
-	v4, v6 := g.desiredSubnets(time.Now())
+	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
+	v4, v6 := g.desiredSubnets(time.Now(), v4Static, v6Static)
 
 	// DNS-производный IPv4 — канонический /32 с TTL.
 	wantV4 := netfilterTools.IPv4Subnet{Address: [4]byte{1, 2, 3, 4}, CIDR: 32}
@@ -95,7 +96,8 @@ func TestDesiredSubnetsStaticWinsOverDNS(t *testing.T) {
 		app: app,
 	}
 
-	v4, _ := g.desiredSubnets(time.Now())
+	v4Static, v6Static := staticSubnetsFromRules(g.Rules)
+	v4, _ := g.desiredSubnets(time.Now(), v4Static, v6Static)
 
 	key := netfilterTools.IPv4Subnet{Address: [4]byte{5, 6, 7, 8}, CIDR: 32}
 	ttl, ok := v4[key]

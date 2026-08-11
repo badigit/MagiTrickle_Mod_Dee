@@ -69,8 +69,18 @@ type App struct {
 
 	// cfgMu сериализует все мутации конфига (группы/правила/подписки) и
 	// защищает lock-free чтения датапаса. См. app_config_lock.go.
-	cfgMu           sync.RWMutex
+	cfgMu sync.RWMutex
+
 	clientRoutingMu sync.Mutex
+
+	// lifecycleMu сериализует переходы жизненного цикла роутинга: поднятие,
+	// снятие и смену режима коммиттера. SetEnabled вызывается прямо из
+	// HTTP-обработчика, поэтому двойной клик в UI без этого лока гоняется за
+	// config.Enabled и routingActive. Берётся ВЫШЕ cfgMu и commitMu.
+	lifecycleMu sync.Mutex
+
+	// committer — асинхронный писатель правил по событиям netfilter.d.
+	committer *netfilterCommitter
 }
 
 // New создаёт новый экземпляр App
@@ -443,15 +453,16 @@ func (a *App) bringUpRouting() error {
 
 	if a.dnsOverrider != nil {
 		if err := a.dnsOverrider.Enable(); err != nil {
-			a.routingActive.Store(false)
-			return fmt.Errorf("failed to override DNS: %w", err)
+			return errors.Join(fmt.Errorf("failed to override DNS: %w", err), a.rollbackFailedBringUp())
 		}
 	}
 
 	for _, group := range a.routingGroups() {
 		if err := group.Enable(); err != nil {
-			a.routingActive.Store(false)
-			return fmt.Errorf("failed to enable group %s: %w", group.Name, err)
+			return errors.Join(
+				fmt.Errorf("failed to enable group %s: %w", group.Name, err),
+				a.rollbackFailedBringUp(),
+			)
 		}
 		if err := group.Sync(); err != nil {
 			log.Warn().Err(err).Str("group", group.Name).Msg("group sync after enable returned error")
@@ -462,49 +473,111 @@ func (a *App) bringUpRouting() error {
 	return nil
 }
 
+// rollbackFailedBringUp снимает то, что успело подняться до ошибки, и
+// возвращает ошибку неполного отката.
+//
+// Без отката уже включённые группы остались бы с живыми цепочками при
+// routingActive=false: следующая перезапись таблиц прошивкой снесла бы их, а
+// коммиттер, находясь к тому моменту на паузе, событие отбросил бы — правила
+// исчезли бы молча, хотя группы считают себя включёнными.
+//
+// Неполный откат НЕЛЬЗЯ выдавать за успех. Group.disable и PortRemap.disable
+// сбрасывают свой флаг enabled через defer даже когда снятие не удалось,
+// поэтому после ошибки объекты считают себя выключенными, а цепочки в ядре
+// могут остаться. Единственный честный ответ вызывающему — вернуть ошибку:
+// на старте она остановит запуск (состояние подчистит CleanIPTables при
+// следующем), в SetEnabled — дойдёт до пользователя, а не притворится паузой.
+func (a *App) rollbackFailedBringUp() error {
+	err := a.tearDownRouting()
+	a.routingActive.Store(false)
+	if err != nil {
+		log.Error().Err(err).Msg("rollback after failed routing bring-up was incomplete")
+	}
+	return err
+}
+
 // bringDownRouting tears down dnsOverrider and disables all routing groups.
 // Idempotent: no-op when already down.
 func (a *App) bringDownRouting() error {
 	if !a.routingActive.CompareAndSwap(true, false) {
 		return nil
 	}
+	err := a.tearDownRouting()
+	if err != nil {
+		log.Warn().Err(err).Msg("routing brought down incompletely: some iptables chains may still be active")
+	} else {
+		log.Info().Msg("routing brought down")
+	}
+	return err
+}
+
+// tearDownRouting снимает роутинг БЕЗ гейта routingActive и возвращает всё,
+// что не удалось снять.
+//
+// Вынесено из bringDownRouting, чтобы неуспешный bringUpRouting мог
+// откатиться: там гейт уже занят текущим поднятием, и bringDownRouting
+// оказался бы no-op.
+func (a *App) tearDownRouting() error {
+	var errs []error
 
 	for _, group := range a.routingGroups() {
 		if err := group.Disable(); err != nil {
 			log.Warn().Err(err).Str("group", group.Name).Msg("group disable failed")
+			errs = append(errs, fmt.Errorf("group %s: %w", group.Name, err))
 		}
 	}
 
 	if a.dnsOverrider != nil {
 		if err := a.dnsOverrider.Disable(); err != nil {
 			log.Warn().Err(err).Msg("dnsOverrider disable failed")
+			errs = append(errs, fmt.Errorf("dnsOverrider: %w", err))
 		}
 	}
-	log.Info().Msg("routing brought down")
-	return nil
+
+	return errors.Join(errs...)
 }
 
 // SetEnabled toggles routing on/off and persists the choice to config.
 // When enabled=false, traffic flows as if MagiTrickle were not running.
 func (a *App) SetEnabled(enabled bool) error {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
 	if a.config.Enabled == enabled && a.routingActive.Load() == enabled {
 		return nil
 	}
 
+	var bringDownErr error
 	if enabled {
 		if err := a.bringUpRouting(); err != nil {
 			return err
 		}
+		if a.committer != nil {
+			a.committer.setMode(committerReady)
+		}
 	} else {
-		_ = a.bringDownRouting()
+		if a.committer != nil {
+			// Сначала паузим коммиттер — setMode возвращается только после
+			// того, как worker принял режим, поэтому нового прохода уже не
+			// начнётся. Иначе он восстановил бы то, что снимает teardown.
+			a.committer.setMode(committerPaused)
+		}
+		bringDownErr = a.bringDownRouting()
 	}
 
+	// Намерение пользователя фиксируется в конфиге безусловно, даже если
+	// снятие роутинга выше не удалось (bringDownErr != nil). Пользователь
+	// попросил выключить — если не сохранить это намерение, после
+	// перезапуска демон снова поднимет роутинг, который просили снять.
+	// Ошибка снятия при этом не глотается: она возвращается вызывающему
+	// вместе с возможной ошибкой SaveConfig, чтобы HTTP-обработчик не
+	// ответил 200 OK при частично снятых iptables-цепочках.
 	a.config.Enabled = enabled
-	if err := a.SaveConfig(); err != nil {
-		log.Error().Err(err).Msg("failed to persist app.enabled")
-		return err
+	saveErr := a.SaveConfig()
+	if saveErr != nil {
+		log.Error().Err(saveErr).Msg("failed to persist app.enabled")
 	}
-	return nil
+	return errors.Join(bringDownErr, saveErr)
 }
 
 // Restart spawns a detached shell that calls the platform restart command

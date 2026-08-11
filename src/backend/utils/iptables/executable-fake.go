@@ -4,17 +4,58 @@ package iptables
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 )
 
 type FakeIPTables struct {
 	rules map[string]map[string][]Rule
 	proto Protocol
+
+	// restoreErrs — очередь ошибок, которые Restore вернёт вместо применения
+	// правил (по одной на вызов, до исчерпания). Моделирует гонку с ndm.
+	restoreErrs  []error
+	restoreCalls int
+	saveCalls    int
+
+	// restoreBlock — сколько Restore «висит», не завершаясь. Моделирует
+	// залипание iptables-restore на чужом xtables.lock (mt-7sa).
+	restoreBlock time.Duration
+
+	// activeRestores/peakRestores — сколько Restore выполняется одновременно.
+	// Прямая проверка сериализации: -race её не даёт, он ловит гонки за память,
+	// а не пересечение вызовов внешней команды.
+	activeRestores int32
+	peakRestores   int32
 }
+
+// PeakConcurrentRestores — максимум одновременно выполнявшихся Restore.
+// 1 означает, что коммиты не пересекались.
+func (ipt *FakeIPTables) PeakConcurrentRestores() int32 {
+	return atomic.LoadInt32(&ipt.peakRestores)
+}
+
+// BlockRestore заставляет Restore зависать на d, пока его не прервёт контекст.
+func (ipt *FakeIPTables) BlockRestore(d time.Duration) {
+	ipt.restoreBlock = d
+}
+
+// FailRestore заставляет следующие len(errs) вызовов Restore вернуть эти ошибки
+// вместо применения правил. Последующие вызовы отрабатывают штатно.
+func (ipt *FakeIPTables) FailRestore(errs ...error) {
+	ipt.restoreErrs = append(ipt.restoreErrs, errs...)
+}
+
+// RestoreCalls / SaveCalls — счётчики обращений, чтобы тест мог проверить число
+// попыток и факт перечитывания состояния.
+func (ipt *FakeIPTables) RestoreCalls() int { return ipt.restoreCalls }
+func (ipt *FakeIPTables) SaveCalls() int    { return ipt.saveCalls }
 
 func NewFakeIPTables(proto Protocol) *FakeIPTables {
 	return &FakeIPTables{
@@ -56,11 +97,24 @@ func (ipt *FakeIPTables) ChainExists(table, chain string) bool {
 	return exists
 }
 
+// DropChain удаляет цепочку целиком — так выглядит перезапись таблицы
+// прошивкой Keenetic со стороны нашей модели.
+func (ipt *FakeIPTables) DropChain(table, chain string) {
+	if ipt.rules[table] == nil {
+		return
+	}
+	delete(ipt.rules[table], chain)
+}
+
 func (ipt *FakeIPTables) Proto() Protocol {
 	return ipt.proto
 }
 
-func (ipt *FakeIPTables) Save() ([]byte, error) {
+func (ipt *FakeIPTables) Save(ctx context.Context) ([]byte, error) {
+	ipt.saveCalls++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	buf := new(bytes.Buffer)
 
 	tableNames := make([]string, 0, len(ipt.rules))
@@ -103,7 +157,36 @@ func (ipt *FakeIPTables) Save() ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func (ipt *FakeIPTables) Restore(data []byte) error {
+func (ipt *FakeIPTables) Restore(ctx context.Context, data []byte) error {
+	ipt.restoreCalls++
+
+	active := atomic.AddInt32(&ipt.activeRestores, 1)
+	for {
+		peak := atomic.LoadInt32(&ipt.peakRestores)
+		if active <= peak || atomic.CompareAndSwapInt32(&ipt.peakRestores, peak, active) {
+			break
+		}
+	}
+	defer atomic.AddInt32(&ipt.activeRestores, -1)
+
+	if ipt.restoreBlock > 0 {
+		select {
+		case <-time.After(ipt.restoreBlock):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(ipt.restoreErrs) > 0 {
+		err := ipt.restoreErrs[0]
+		ipt.restoreErrs = ipt.restoreErrs[1:]
+		if err != nil {
+			return err
+		}
+	}
+
 	lines := bytes.Split(data, []byte("\n"))
 	currentTable := ""
 	for _, line := range lines {

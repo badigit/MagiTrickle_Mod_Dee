@@ -164,6 +164,58 @@ func (nh *Helper) removeInterfacePreamble(ipt *iptables.IPTables) error {
 	return errors.Join(errs...)
 }
 
+// Batch выполняет fn в режиме отложенного коммита: промежуточные Commit()
+// внутри Enable/Disable групп не ходят в ядро, а копятся, и применяются одним
+// коммитом на семейство после fn.
+//
+// Зачем: каждый Commit — это пара iptables-save/iptables-restore. При массовых
+// операциях (подъём и снятие всех групп) их число линейно по количеству групп:
+// на проде замерено 152 обращения к ядру при старте и 76 при teardown, что
+// давало ~6с только на снятие правил (mt-jou). Это упирается в лимит ожидания
+// init.d (~11с), после которого прилетает SIGKILL и teardown обрывается на
+// полпути, оставляя правила и сеты в системе. На медленных роутерах (mipsel)
+// запас ещё меньше.
+//
+// Флаг снимается через defer — то есть при ошибке или панике внутри fn режим не
+// останется включённым, иначе последующие правки правил тихо не доезжали бы до
+// ядра. Финальный коммит выполняется всегда, в том числе когда fn вернула
+// ошибку: часть правил уже накоплена, и оставлять её неприменённой хуже.
+func (nh *Helper) Batch(fn func() error) error {
+	// Helper может быть не инициализирован (ранний старт, юнит-тесты без
+	// netfilter) — тогда батчить нечего, просто выполняем работу.
+	if nh == nil {
+		return fn()
+	}
+
+	ipts := []*iptables.IPTables{nh.IPTables4, nh.IPTables6}
+
+	for _, ipt := range ipts {
+		if ipt != nil {
+			ipt.SetDeferred(true)
+		}
+	}
+	defer func() {
+		for _, ipt := range ipts {
+			if ipt != nil {
+				ipt.SetDeferred(false)
+			}
+		}
+	}()
+
+	errs := []error{fn()}
+
+	for _, ipt := range ipts {
+		if ipt == nil {
+			continue
+		}
+		ipt.SetDeferred(false)
+		if err := ipt.Commit(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to commit batched rules: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 func New(chainPrefix, ipsetPrefix string, disableIPv4, disableIPv6 bool, startIdx uint32) (*Helper, error) {
 	var ipt4, ipt6 *iptables.IPTables
 

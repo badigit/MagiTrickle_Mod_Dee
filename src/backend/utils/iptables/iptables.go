@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -32,6 +33,15 @@ type IPTables struct {
 
 	// commitMu сериализует коммиты между собой. См. CommitContext.
 	commitMu sync.Mutex
+
+	// deferred включает батч-режим: Commit() не ходит в ядро, а лишь копит
+	// правила в rules. Нужен для массовых операций (teardown/bring-up всех
+	// групп), где каждый Commit — отдельная пара iptables-save/restore: на
+	// проде это давало 76 обращений к ядру за 6с при снятии 38 групп и 152 при
+	// подъёме, причём линейно по числу групп (mt-jou). Под батчем цена
+	// становится константной. Снимать флаг обязан тот, кто его поставил —
+	// см. Helper.Batch, который делает это через defer.
+	deferred atomic.Bool
 }
 
 func NewIPTables(executable Executable) *IPTables {
@@ -215,7 +225,25 @@ func splitFields(data []byte) [][]byte {
 
 // Commit применяет накопленные правила с фоновым контекстом. Потолок времени на
 // каждый внешний вызов задаётся execTimeout независимо от переданного контекста.
+// SetDeferred включает/выключает батч-режим (см. поле deferred). Выключение
+// само по себе НЕ коммитит — вызывающий делает это явно.
+func (ipt *IPTables) SetDeferred(v bool) {
+	ipt.deferred.Store(v)
+}
+
+// Deferred сообщает, активен ли батч-режим.
+func (ipt *IPTables) Deferred() bool {
+	return ipt.deferred.Load()
+}
+
 func (ipt *IPTables) Commit() error {
+	// В батч-режиме промежуточные коммиты — no-op: правила уже накоплены в
+	// ipt.rules, применит их финальный коммит батча. CommitContext намеренно
+	// НЕ проверяет флаг: форс-коммит (хук netfilter.d, коммиттер) должен
+	// доходить до ядра всегда.
+	if ipt.deferred.Load() {
+		return nil
+	}
 	return ipt.CommitContext(context.Background())
 }
 

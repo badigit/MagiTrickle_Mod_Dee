@@ -527,9 +527,39 @@ func (a *App) bringDownRouting() error {
 func (a *App) tearDownRouting() error {
 	var errs []error
 
-	for _, group := range a.routingGroups() {
-		if err := group.Disable(); err != nil {
-			log.Warn().Err(err).Str("group", group.Name).Msg("group disable failed")
+	// Снятие всех групп идёт под одним коммитом: иначе каждая группа делает
+	// собственную пару iptables-save/restore и время растёт линейно по их
+	// числу (замер на проде: 76 обращений к ядру, ~6с на 38 группах). init.d
+	// ждёт остановки ~11с и затем шлёт SIGKILL, обрывая teardown на полпути и
+	// оставляя правила с сетами в системе; на медленных роутерах (mipsel)
+	// запаса нет вовсе (mt-jou).
+	//
+	// Батчится ТОЛЬКО teardown — однородная последовательность удалений.
+	// Bring-up под батчем на проде дал регрессию (после старта ни одного
+	// правила MT_ в mangle/nat, трафик мимо прокси) и откачен; причина не
+	// установлена, воспроизвести на fake-iptables не удалось, поэтому
+	// смешанные delete+create последовательности батчем не покрываем.
+	groups := a.routingGroups()
+
+	// Фаза 1: снять netfilter-правила всех групп под одним коммитом.
+	batchErr := a.nfHelper.Batch(func() error {
+		for _, group := range groups {
+			if err := group.DisableRules(); err != nil {
+				log.Warn().Err(err).Str("group", group.Name).Msg("group rules teardown failed")
+				errs = append(errs, fmt.Errorf("group %s: %w", group.Name, err))
+			}
+		}
+		return nil
+	})
+	if batchErr != nil {
+		errs = append(errs, batchErr)
+	}
+
+	// Фаза 2: правила сняты в ядре — теперь ipset никем не удерживается и его
+	// можно уничтожить. Обратный порядок даёт "failed to destroy ipset: busy".
+	for _, group := range groups {
+		if err := group.DestroySets(); err != nil {
+			log.Warn().Err(err).Str("group", group.Name).Msg("group ipset destroy failed")
 			errs = append(errs, fmt.Errorf("group %s: %w", group.Name, err))
 		}
 	}

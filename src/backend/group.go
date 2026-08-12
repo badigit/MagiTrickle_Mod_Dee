@@ -244,8 +244,19 @@ func (g *Group) disable() error {
 	if !g.Enabled() {
 		return nil
 	}
-	defer g.enabled.Store(false)
 
+	errs := []error{g.disableRules()}
+	errs = append(errs, g.destroySets())
+	return errors.Join(errs...)
+}
+
+// disableRules снимает netfilter-правила группы, НЕ трогая ipset. Вызывать под
+// g.locker. Отделено от уничтожения сетов ради батчинга teardown: ядро не даёт
+// уничтожить сет, на который ещё ссылается правило ("failed to destroy ipset:
+// busy"), а под батчем правила до финального коммита сняты только в буфере.
+// Поэтому порядок обязателен: снять правила у всех групп -> закоммитить ->
+// только потом уничтожать сеты (mt-jou).
+func (g *Group) disableRules() error {
 	if !g.Group.Enable {
 		return nil
 	}
@@ -271,17 +282,46 @@ func (g *Group) disable() error {
 		g.ipsetToTProxy = nil
 		return nil
 	}())
-	errs = append(errs, func() error {
-		if g.ipset == nil {
-			return nil
-		}
-		if err := g.ipset.Disable(); err != nil {
-			return fmt.Errorf("failed to destroy ipset: %w", err)
-		}
-		g.ipset = nil
-		return nil
-	}())
 	return errors.Join(errs...)
+}
+
+// destroySets уничтожает ipset группы и гасит её флаг. Вызывать под g.locker и
+// ТОЛЬКО после того, как правила, ссылающиеся на сет, реально сняты в ядре.
+func (g *Group) destroySets() error {
+	defer g.enabled.Store(false)
+
+	if !g.Group.Enable {
+		return nil
+	}
+
+	if g.ipset == nil {
+		return nil
+	}
+	if err := g.ipset.Disable(); err != nil {
+		return fmt.Errorf("failed to destroy ipset: %w", err)
+	}
+	g.ipset = nil
+	return nil
+}
+
+// DisableRules — фаза 1 двухфазного teardown (см. disableRules).
+func (g *Group) DisableRules() error {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+	if !g.Enabled() {
+		return nil
+	}
+	return g.disableRules()
+}
+
+// DestroySets — фаза 2 двухфазного teardown (см. destroySets).
+func (g *Group) DestroySets() error {
+	g.locker.Lock()
+	defer g.locker.Unlock()
+	if !g.Enabled() {
+		return nil
+	}
+	return g.destroySets()
 }
 
 func (g *Group) Disable() error {

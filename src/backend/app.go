@@ -464,13 +464,37 @@ func (a *App) bringUpRouting() error {
 		}
 	}
 
-	for _, group := range a.routingGroups() {
-		if err := group.Enable(); err != nil {
-			return errors.Join(
-				fmt.Errorf("failed to enable group %s: %w", group.Name, err),
-				a.rollbackFailedBringUp(),
-			)
+	// Подъём групп идёт под одним коммитом на семейство: без этого каждая
+	// группа делает свою пару iptables-save/restore — замер на проде показывал
+	// 152 обращения к ядру и 14с до готовности роутинга; с батчем 6 и 7с
+	// (mt-of9).
+	//
+	// Sync вынесен ЗА батч намеренно: он наполняет ipset через netlink и читает
+	// текущее состояние сетов, поэтому ему нужны уже применённые правила.
+	//
+	// Историческая справка: первая попытка батчить bring-up (mt-jou) оставила
+	// прод без единого правила MT_. Причиной был не сам батч, а сломанный тогда
+	// teardown: сеты не уничтожались ("destroy: busy"), из-за чего ipset.Enable
+	// падал, Group.Enable возвращал ошибку и rollbackFailedBringUp снимал уже
+	// поднятое. После двухфазного teardown из mt-jou батч здесь безопасен, что
+	// подтверждено на живом роутере.
+	var enableErr error
+	batchErr := a.nfHelper.Batch(func() error {
+		for _, group := range a.routingGroups() {
+			if err := group.Enable(); err != nil {
+				enableErr = fmt.Errorf("failed to enable group %s: %w", group.Name, err)
+				return enableErr
+			}
 		}
+		return nil
+	})
+	if enableErr != nil {
+		return errors.Join(enableErr, a.rollbackFailedBringUp())
+	}
+	if batchErr != nil {
+		return errors.Join(batchErr, a.rollbackFailedBringUp())
+	}
+	for _, group := range a.routingGroups() {
 		if err := group.Sync(); err != nil {
 			log.Warn().Err(err).Str("group", group.Name).Msg("group sync after enable returned error")
 		}

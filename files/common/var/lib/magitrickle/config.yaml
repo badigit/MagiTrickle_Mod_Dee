@@ -35,6 +35,11 @@ app:
     disableIPv4: false
     disableIPv6: false
     startMarkTableIndex: 1298229097
+    # Приоритет direct-групп при пересечении по IP:
+    #   absolute - direct перебивает все группы, где бы он ни стоял в списке
+    #   byOrder  - direct в общей очереди, выигрывает группа выше по списку
+    # Смена требует перезапуска демона.
+    directPriority: absolute
   link:
     - br0
   showAllInterfaces: false

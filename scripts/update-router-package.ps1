@@ -31,6 +31,15 @@ Write-Host "Uploading to $HostAlias`:$remotePackagePath"
 ssh $HostAlias "mkdir -p $RemoteTmpDir"
 scp -O $PackagePath "${HostAlias}:$RemoteTmpDir/"
 
+# mt-2jb: падение демона после деплоя воспроизводится редко, а причина нигде
+# не сохранялась - демон запускается с выводом в /dev/null. Включаем файловый
+# лог (флаг-файл, см. run_daemon в init.d) ТОЛЬКО на время деплоя: постоянная
+# запись жгла бы флеш (zerolog пишет строку на каждый DNS-запрос). Если демон
+# переживёт проверку - лог и флаг удаляются; если умрёт - остаются для разбора.
+$debugFlag = "/opt/var/lib/magitrickle/debug-log"
+$debugLog = "/opt/var/log/magitrickle.log"
+ssh $HostAlias "touch $debugFlag; rm -f $debugLog" | Out-Null
+
 Write-Host "Installing package on $HostAlias"
 ssh $HostAlias "opkg install --force-reinstall $remotePackagePath"
 
@@ -72,7 +81,12 @@ while ($elapsed -lt $verifySeconds) {
 
 if ([string]::IsNullOrWhiteSpace($lastPid)) {
   Write-Host "DEPLOY FAILED: magitrickled is not running ${verifySeconds}s after install." -ForegroundColor Red
+  Write-Host "--- tail of $debugLog (kept on the router for analysis) ---" -ForegroundColor Yellow
+  ssh $HostAlias "tail -n 40 $debugLog 2>/dev/null"
   exit 1
 }
+
+# Демон выжил - диагностический лог больше не нужен, флеш не жжём.
+ssh $HostAlias "rm -f $debugFlag $debugLog" | Out-Null
 
 Write-Host "Deploy confirmed: magitrickled alive (pid=$lastPid) ${verifySeconds}s after install." -ForegroundColor Green

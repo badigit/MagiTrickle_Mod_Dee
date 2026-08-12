@@ -162,18 +162,31 @@ func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.M
 		return nil, nil
 	}
 
+	// Клиентская проекция строится copy-on-write поверх respMsg.Answer:
+	// обе трансформации (strip ipv6hint из HTTPS/SVCB + TTL-cap) применяются
+	// последовательно к одному срезу, respMsg.Answer остаётся оригиналом для
+	// handleMessage.
 	clientMsg := respMsg // мелкая копия структуры (slice-header Answer общий)
-	if ttlCap > 0 {
-		clientMsg.Answer = capAnswersTTL(respMsg.Answer, ttlCap)
+	clientAnswers := respMsg.Answer
+	if dropAAAA {
+		// AAAA-записи уже отфильтрованы выше, но ipv6hint внутри HTTPS/SVCB
+		// провёз бы IPv6-адрес мимо фильтра (mt-ocy, класс T1 из mt-240).
+		clientAnswers = stripSVCBIPv6Hints(clientAnswers)
 	}
+	if ttlCap > 0 {
+		clientAnswers = capAnswersTTL(clientAnswers, ttlCap)
+	}
+	clientMsg.Answer = clientAnswers
 	return &clientMsg, nil
 }
 
-// capAnswersTTL возвращает копию answers, в которой A/AAAA/CNAME с TTL > ttlCap
-// получают TTL = ttlCap. Записи с TTL <= ttlCap и прочие типы переиспользуются
-// как есть (тот же указатель). Копируются ТОЛЬКО капаемые RR — чтобы не
-// мутировать RR, которые параллельно читает handleMessage (в ipset должен уйти
-// ОРИГИНАЛЬНЫЙ TTL, cap не должен протечь).
+// capAnswersTTL возвращает копию answers, в которой A/AAAA/CNAME/HTTPS/SVCB с
+// TTL > ttlCap получают TTL = ttlCap. Записи с TTL <= ttlCap и прочие типы
+// переиспользуются как есть (тот же указатель). Копируются ТОЛЬКО капаемые RR —
+// чтобы не мутировать RR, которые параллельно читает handleMessage (в ipset
+// должен уйти ОРИГИНАЛЬНЫЙ TTL, cap не должен протечь). HTTPS/SVCB капаются по
+// той же причине, что и A: клиент не должен держать адресные hints дольше
+// жизни ipset-записи (mt-ocy).
 func capAnswersTTL(answers []dns.RR, ttlCap uint32) []dns.RR {
 	out := make([]dns.RR, 0, len(answers))
 	for _, rr := range answers {
@@ -183,7 +196,7 @@ func capAnswersTTL(answers []dns.RR, ttlCap uint32) []dns.RR {
 		hdr := rr.Header()
 		if hdr.Ttl > ttlCap {
 			switch rr.(type) {
-			case *dns.A, *dns.AAAA, *dns.CNAME:
+			case *dns.A, *dns.AAAA, *dns.CNAME, *dns.HTTPS, *dns.SVCB:
 				cp := dns.Copy(rr)
 				cp.Header().Ttl = ttlCap
 				out = append(out, cp)
@@ -226,6 +239,12 @@ func (a *App) handleMessage(msg dns.Msg, clientAddr net.Addr, network string) {
 			a.processAAAARecord(*v, idStr, clientAddrStr, network)
 		case *dns.CNAME:
 			a.processCNameRecord(*v, idStr, clientAddrStr, network)
+		case *dns.HTTPS:
+			// Тип 65: адресные подсказки (ipv4hint/ipv6hint) ведём в ipset тем
+			// же путём, что A/AAAA (mt-ocy). Generic SVCB (тип 64) намеренно не
+			// обрабатываем: его QNAME (_853._dns.example.com) не матчится
+			// правилами — только клиентская санитизация в dnsResponseHook.
+			a.processHTTPSRecord(v, idStr, clientAddrStr, network)
 		}
 	}
 }

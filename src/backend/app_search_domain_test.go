@@ -71,9 +71,9 @@ func TestSearchDomainArbitration(t *testing.T) {
 			name: "regex-fallback отдаёт свою группу когда trie/wildcard молчат",
 			base: []*Group{
 				sdGroup("A", true, sdRule(models.RuleTypeDomain, "other.com")),
-				sdGroup("B", true, sdRule(models.RuleTypeRegEx, `\.vpn$`)),
+				sdGroup("B", true, sdRule(models.RuleTypeRegEx, `\.tun$`)),
 			},
-			query: "host.vpn",
+			query: "host.tun",
 			want:  "B",
 		},
 		{

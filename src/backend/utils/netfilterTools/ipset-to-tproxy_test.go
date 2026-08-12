@@ -218,7 +218,7 @@ func TestLinkUpHookIsNoop(t *testing.T) {
 // Regression: a poisoned subscription (e.g. opencck.org whatsapp returning
 // 126.0.0.0/7 which covers 127.0.0.0/8) put 127.0.0.1 into the ipset, which
 // caused router's own DNS queries to 127.0.0.1:53 to be looped through TPROXY
-// → mihomo → VPN, exhausting CPU.
+// → mihomo → туннель, exhausting CPU.
 func TestPREROUTINGExcludesLoopback(t *testing.T) {
 	r, fake := newTProxyTestFixture(iptables.ProtocolIPv4)
 

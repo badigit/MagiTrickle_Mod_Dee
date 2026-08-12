@@ -19,7 +19,7 @@
 # Топология (все netns свои, хост не затрагивается; iptables/ipset/routes
 # демона живут внутри netns "router" и умирают вместе с ним):
 #
-#   [client] --veth-- [router: magitrickled] --veth-- [vpn: echo/http server]
+#   [client] --veth-- [router: magitrickled] --veth-- [tun: echo/http server]
 #      10.90.1.2        .1.1   default→wan    .3.1        203.0.113.10 (lo)
 #                        \-------veth-------- [wan: unreachable 203.0.113.10]
 #                         .2.1               .2.2
@@ -35,7 +35,7 @@ set -u
 # --- параметры ---
 R=mtitr   # router ns
 C=mtitc   # client ns
-V=mtitv   # vpn ns
+V=mtitv   # tun ns
 W=mtitw   # wan ns
 TEST_IP=203.0.113.10
 HTTP_PORT=8080
@@ -98,13 +98,13 @@ ip netns exec "$R" sysctl -qw net.ipv4.ip_forward=1
 ip -n "$R" route add default via 10.90.2.2            # main: всё в "wan"
 ip -n "$C" route add default via 10.90.1.1
 ip -n "$V" route add default via 10.90.3.1
-ip -n "$V" addr add "$TEST_IP/32" dev lo              # тестовый IP живёт в "vpn"
+ip -n "$V" addr add "$TEST_IP/32" dev lo              # тестовый IP живёт в "tun"
 ip -n "$W" route add unreachable "$TEST_IP/32"        # в "wan" он недостижим
 # хинт для getGwFromIface: у v1 должен существовать маршрут со шлюзом,
 # иначе default-маршрут таблицы группы останется без next-hop (veth = broadcast)
 ip -n "$R" route add 198.51.100.0/24 via 10.90.3.2 dev v1
 
-# --- серверы в "vpn" ---
+# --- серверы в "tun" ---
 ip netns exec "$V" python3 -c "
 import http.server, threading, socketserver, socket
 
@@ -123,9 +123,9 @@ h.serve_forever()
 " >"$TMP/server.log" 2>&1 &
 SRV_PID=$!
 
-# Активное ожидание готовности ОБОИХ портов изнутри "vpn" (минуя MagiTrickle):
+# Активное ожидание готовности ОБОИХ портов изнутри "tun" (минуя MagiTrickle):
 # sleep-константа здесь была источником ложных RST-провалов T1.
-say "жду готовности серверов в vpn-ns..."
+say "жду готовности серверов в tun-ns..."
 srv_ready=0
 for _ in $(seq 1 50); do
     if ip netns exec "$V" curl -fsS -m 1 -o /dev/null "http://$TEST_IP:$HTTP_PORT/" 2>/dev/null \
@@ -136,7 +136,7 @@ for _ in $(seq 1 50); do
     sleep 0.2
 done
 if [ "$srv_ready" != 1 ]; then
-    echo "тест-инфра: серверы в vpn-ns не поднялись"; cat "$TMP/server.log"
+    echo "тест-инфра: серверы в tun-ns не поднялись"; cat "$TMP/server.log"
     ip netns exec "$V" ss -tln
     exit 1
 fi
@@ -189,7 +189,7 @@ stop_daemon() {
 }
 
 GROUP_V='  - id: "01020304"
-    name: iface-vpn
+    name: iface-tun
     color: "#ff0000"
     interface: v1
     enable: true
@@ -204,7 +204,7 @@ GROUP_W='  - id: "05060708"
       - {id: "0e0f1011", name: test-ip, type: subnet, rule: '"$TEST_IP"'/32, enable: true}'
 
 write_config "$GROUP_V"
-say "старт magitrickled (группа iface-vpn -> v1)..."
+say "старт magitrickled (группа iface-tun -> v1)..."
 start_daemon || { fail "демон не поднялся"; exit 1; }
 
 ipset_name=$(ip netns exec "$R" ipset list -n | grep '^mt_' | head -1)
@@ -218,7 +218,7 @@ dump_router_state() {
         echo "--- table $t ---"; ip netns exec "$R" ip route show table "$t"
     done
     echo "--- ipset ---";   ip netns exec "$R" ipset list
-    echo "--- vpn-ns listeners ---"; ip netns exec "$V" ss -tln
+    echo "--- tun-ns listeners ---"; ip netns exec "$V" ss -tln
 }
 
 # --- T1: forward + reply path ---
@@ -278,15 +278,15 @@ else
 fi
 
 # --- T4: арбитраж first-wins между двумя interface-группами ---
-say "рестарт с двумя группами: iface-vpn ПЕРВАЯ, iface-wan вторая..."
+say "рестарт с двумя группами: iface-tun ПЕРВАЯ, iface-wan вторая..."
 stop_daemon
 write_config "$GROUP_V
 $GROUP_W"
 start_daemon || { fail "демон не поднялся (2 группы)"; exit 1; }
 if ip netns exec "$C" curl -fsS -m 5 -o /dev/null "http://$TEST_IP:$HTTP_PORT/"; then
-    pass "T4a арбитраж: первая группа (vpn) выиграла overlap — ответ получен"
+    pass "T4a арбитраж: первая группа (tun) выиграла overlap — ответ получен"
 else
-    fail "T4a арбитраж: первая группа не выиграла (трафик ушёл не в vpn)"
+    fail "T4a арбитраж: первая группа не выиграла (трафик ушёл не в tun)"
 fi
 
 say "рестарт с обратным порядком: iface-wan ПЕРВАЯ..."

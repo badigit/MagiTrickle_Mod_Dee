@@ -185,7 +185,7 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 
 	// Exclude loopback: router-local traffic must not enter MagiTrickle routing,
 	// otherwise router's own packets to addresses in the ipset (e.g. 127.0.0.1
-	// from a poisoned subscription) get marked and routed via VPN table.
+	// from a poisoned subscription) get marked and routed via the tunnel routing table.
 	err = ipt.Append("mangle", "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	if err != nil {
 		return fmt.Errorf("failed to append rule to PREROUTING: %w", err)
@@ -480,7 +480,7 @@ func (r *IPSetToLink) updateIfaceRoute(iface netlink.Link, family int, current *
 
 // getGwFromIface ищет шлюз, прописанный на интерфейсе для указанного семейства.
 // Нужен для broadcast-интерфейсов (eth/wifi): без явного Gw маршрут default
-// через них не работает на части конфигураций. Для PointToPoint-iface (VPN)
+// через них не работает на части конфигураций. Для PointToPoint-iface (туннель)
 // шлюз не нужен и вызывать не надо.
 func getGwFromIface(iface netlink.Link, family int) (net.IP, error) {
 	routes, err := netlink.RouteListFiltered(family, &netlink.Route{

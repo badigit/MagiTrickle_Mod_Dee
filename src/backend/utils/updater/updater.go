@@ -30,7 +30,7 @@ const (
 	latestReleaseURL = "https://api.github.com/repos/" + forkRepo + "/releases/latest"
 	// install.sh тянем сначала через api.github.com (contents API, raw media
 	// type) — тот же хост, что и проверка версии, — а при сбое падаем на
-	// raw.githubusercontent.com. Оба у типового VPN-роутера идут через github-
+	// raw.githubusercontent.com. Оба у типового роутера с туннелем идут через github-
 	// группу; два независимых хоста повышают шанс пережить транзиент.
 	installScriptURLAPI = "https://api.github.com/repos/" + forkRepo + "/contents/scripts/install.sh?ref=" + forkBranch
 	installScriptURLRaw = "https://raw.githubusercontent.com/" + forkRepo + "/" + forkBranch + "/scripts/install.sh"
@@ -44,7 +44,7 @@ const (
 	installTimeout = 10 * time.Minute
 
 	// downloadAttempts — попыток на каждый URL при транзиентных ошибках
-	// (сеть / 5xx: GitHub периодически отдаёт 502 через VPN-путь).
+	// (сеть / 5xx: GitHub периодически отдаёт 502 через туннель).
 	downloadAttempts = 3
 )
 
@@ -276,7 +276,7 @@ func httpGetBody(url, accept string) (body []byte, retryable bool, err error) {
 // downloadInstallScript тянет install.sh, перебирая источники (api.github.com,
 // затем raw.githubusercontent.com) с ретраями на транзиентных ошибках. Раньше
 // был один exec curl без таймаута и без ретраев: единичный 502 от GitHub через
-// VPN-путь ронял всё обновление.
+// туннельный путь ронял всё обновление.
 func downloadInstallScript(dest string) error {
 	sources := []struct{ name, url, accept string }{
 		{"api.github.com", installScriptURLAPI, "application/vnd.github.raw"},

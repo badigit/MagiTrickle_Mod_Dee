@@ -31,7 +31,7 @@
 | **MagiTrickle** (`magitrickled`) | TCP/UDP `:3553`, web `:8080`, mark-route to `tproxy :5001` | `/opt/var/lib/magitrickle/config.yaml` | DNS-MITM прокси: перехватывает домены клиентов, помечает их через ipset, маршрутизирует через mihomo |
 | **mihomo** | DNS server `:6868`, mixed `:7890/:7891`, **API `:9090`** | `/opt/etc/mihomo/config.yaml` | Прокси-движок, рулзы, DNS-resolver |
 | **ndnproxy** (Keenetic штатный) | `:53` | — | Системный DNS-прокси Keenetic; magitrickle перехватывает 53 через iptables redirect на 3553 |
-| **zerotier-one** | `:44424` | — | VPN mesh, не имеет отношения к стеку |
+| **zerotier-one** | `:44424` | — | mesh-оверлей, не имеет отношения к стеку |
 
 **Цепочка DNS-запроса от клиента (dual-upstream, текущая):**
 ```

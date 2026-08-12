@@ -8,6 +8,14 @@ DESC="MagiTrickle Daemon"
 PATH=/opt/sbin:/opt/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 UPTIME_MAX_BORDER=300
 
+# Диагностический лог демона. По умолчанию stdout/stderr уходят в /dev/null:
+# zerolog пишет в stderr строку на каждый DNS-запрос, а на роутере флеш дорогой.
+# Включить: touch /opt/var/lib/magitrickle/debug-log  (и перезапустить демон).
+# Уровень задаётся отдельно: ARGS="--log-level debug".
+DEBUG_LOG_FLAG=/opt/var/lib/magitrickle/debug-log
+DEBUG_LOG_FILE=/opt/var/log/magitrickle.log
+DEBUG_LOG_MAX_KB=5120
+
 ACTION=$1
 CALLER=$2
 
@@ -26,6 +34,28 @@ get_uptime() {
     cut -d. -f1 /proc/uptime
 }
 
+# run_daemon запускает демон в фоне. По умолчанию вывод отбрасывается; при
+# наличии флаг-файла пишется в лог — без этого причина падения демона нигде не
+# сохраняется (logger в start() срабатывает лишь когда процесс не поднялся
+# вовсе, а он успевает подняться и умереть позже — mt-2jb). Лог усекается по
+# достижении лимита: logrotate на роутере нет.
+run_daemon() {
+  if [ ! -f "$DEBUG_LOG_FLAG" ]; then
+    $PREARGS $PROC $ARGS > /dev/null 2>&1 &
+    return 0
+  fi
+
+  mkdir -p "${DEBUG_LOG_FILE%/*}" 2>/dev/null
+  if [ -f "$DEBUG_LOG_FILE" ]; then
+    SIZE_KB=`du -k "$DEBUG_LOG_FILE" 2>/dev/null | cut -f1`
+    if [ -n "$SIZE_KB" ] && [ "$SIZE_KB" -gt "$DEBUG_LOG_MAX_KB" ]; then
+      : > "$DEBUG_LOG_FILE"
+    fi
+  fi
+  echo "--- $DESC starting at `date` ---" >> "$DEBUG_LOG_FILE"
+  $PREARGS $PROC $ARGS >> "$DEBUG_LOG_FILE" 2>&1 &
+}
+
 startup_loop() {
   $PRECMD > /dev/null 2>&1
   STEP=5
@@ -40,7 +70,7 @@ startup_loop() {
     fi
 
     logger "Starting $DESC from $CALLER (Attempt #`expr $COUNTER + 1`)."
-    $PROC > /dev/null 2>&1 &
+    run_daemon
     sleep $STEP
     if [ -z "`pidof $PROC`" ]; then
       logger "Failed to start $DESC from $CALLER (Attempt #`expr $COUNTER + 1`)."
@@ -74,7 +104,7 @@ start() {
   fi
 
   $PRECMD > /dev/null 2>&1
-  $PREARGS $PROC $ARGS > /dev/null 2>&1 &
+  run_daemon
   COUNTER=0
   LIMIT=10
   while [ -z "`pidof $PROC`" -a "$COUNTER" -le "$LIMIT" ]; do

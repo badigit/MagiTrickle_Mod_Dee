@@ -39,6 +39,19 @@ type IPSetToLink struct {
 	ip6Route     [2]*netlink.Route
 }
 
+// linkDirectChain цепляет direct-цепочку в PREROUTING указанной таблицы.
+// Позиция и есть переключатель приоритета (mt-n4b): в absolute-режиме цепочка
+// встаёт первой и перебивает все группы, в by-order — добавляется в конец,
+// то есть в порядке поднятия групп, который совпадает с порядком списка в UI
+// (routingGroups отдаёт базовые группы в порядке конфига). Правила ВНУТРИ
+// цепочки от режима не зависят.
+func (r *IPSetToLink) linkDirectChain(ipt *iptables.IPTables, table string) error {
+	if r.nh.DirectPriorityByOrder {
+		return ipt.Append(table, "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
+	}
+	return ipt.Insert(table, "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)
+}
+
 func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 	if ipt == nil {
 		return nil
@@ -82,9 +95,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 			return fmt.Errorf("failed to append ACCEPT rule: %w", err)
 		}
 
-		// Insert at the top so direct always takes priority over other groups' chains.
+		// Позиция зависит от режима приоритета — см. linkDirectChain.
 		// Exclude loopback: router-local traffic must not enter MagiTrickle routing.
-		err = ipt.Insert("mangle", "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)
+		err = r.linkDirectChain(ipt, "mangle")
 		if err != nil {
 			return fmt.Errorf("failed to insert rule to PREROUTING: %w", err)
 		}
@@ -103,7 +116,9 @@ func (r *IPSetToLink) insertIPTablesRules(ipt *iptables.IPTables) error {
 			return fmt.Errorf("failed to append nat ACCEPT rule: %w", err)
 		}
 
-		err = ipt.Insert("nat", "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)
+		// Та же позиция, что и в mangle: разъехавшийся порядок дал бы режим,
+		// где direct проигрывает по mangle, но выигрывает по nat.
+		err = r.linkDirectChain(ipt, "nat")
 		if err != nil {
 			return fmt.Errorf("failed to insert rule to nat PREROUTING: %w", err)
 		}

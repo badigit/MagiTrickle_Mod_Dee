@@ -14,6 +14,7 @@ import (
 	"magitrickle/utils/netfilterTools"
 
 	"github.com/dlclark/regexp2"
+	"github.com/rs/zerolog/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +26,23 @@ const cfgInterfaceFileLocation = cfgFolderLocation + "/config_interfaces.mtrickl
 
 // recordsCacheSnapshotLocation — персист DNS-кэша между запусками (mt-pqa).
 const recordsCacheSnapshotLocation = cfgFolderLocation + "/records-cache.snap"
+
+// normalizeDirectPriority приводит режим арбитража direct к известному
+// значению. Незнакомое значение (опечатка в YAML, конфиг из более новой
+// версии) не должно менять маршрутизацию молча: падаем в absolute — дефолт,
+// при котором direct перебивает всех, — и говорим об этом в лог.
+func normalizeDirectPriority(mode string) string {
+	switch mode {
+	case models.DirectPriorityAbsolute, models.DirectPriorityByOrder:
+		return mode
+	default:
+		log.Warn().
+			Str("value", mode).
+			Str("fallback", models.DirectPriorityAbsolute).
+			Msg("unknown netfilter.directPriority, falling back")
+		return models.DirectPriorityAbsolute
+	}
+}
 
 func (a *App) LoadConfig() error {
 	cfgFile, err := os.ReadFile(cfgFileLocation)
@@ -247,6 +265,9 @@ func (a *App) ImportConfig(cfg config.Config) error {
 			if cfg.App.Netfilter.TProxyPort != nil {
 				a.config.Netfilter.TProxyPort = *cfg.App.Netfilter.TProxyPort
 			}
+			if cfg.App.Netfilter.DirectPriority != nil {
+				a.config.Netfilter.DirectPriority = normalizeDirectPriority(*cfg.App.Netfilter.DirectPriority)
+			}
 		}
 
 		if cfg.App.Link != nil {
@@ -467,6 +488,7 @@ func (a *App) ExportConfig() config.Config {
 				DisableIPv6:         &a.config.Netfilter.DisableIPv6,
 				StartMarkTableIndex: &a.config.Netfilter.StartMarkTableIndex,
 				TProxyPort:          &a.config.Netfilter.TProxyPort,
+				DirectPriority:      &a.config.Netfilter.DirectPriority,
 			},
 			Link:              &a.config.Link,
 			ShowAllInterfaces: &a.config.ShowAllInterfaces,

@@ -21,6 +21,16 @@ type Helper struct {
 
 	StartIdx uint32
 
+	// DirectPriorityByOrder переключает арбитраж direct-групп (mt-n4b).
+	// false (дефолт) — direct абсолютен: его цепочка встаёт первой в
+	// PREROUTING и ACCEPT внутри неё перебивает TPROXY/MARK любой другой
+	// группы, где бы direct ни стоял в списке. true — direct участвует в
+	// общей очереди наравне с остальными, поэтому группа выше по списку
+	// выигрывает overlap, а широкая direct-группа внизу работает catch-all'ом
+	// (конфиги, сложившиеся до f326f4a). Содержимое цепочки в обоих режимах
+	// одинаково: терминирует ACCEPT, возврат к RETURN означал бы баг mt-my3.
+	DirectPriorityByOrder bool
+
 	// preambleMu guards the reference count for the shared interface-mode
 	// mangle preamble. The preamble is a single chain shared by all
 	// interface-mode groups, installed on the first group and removed on the

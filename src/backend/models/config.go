@@ -68,6 +68,21 @@ type AppConfigDNSProxyServer struct {
 	Port    uint16
 }
 
+// Режимы арбитража direct-групп (mt-n4b).
+//
+// DirectPriorityAbsolute — дефолт и поведение с .15: direct-цепочка встаёт
+// первой в PREROUTING, поэтому direct выигрывает любой overlap по IP, где бы
+// группа ни стояла в списке.
+//
+// DirectPriorityByOrder — «как раньше»: direct стоит в общей очереди по своему
+// месту в списке групп, поэтому группа выше выигрывает overlap, а широкая
+// direct-группа внизу работает catch-all'ом. Это НЕ возврат бага mt-my3:
+// цепочка по-прежнему терминирует обход ACCEPT'ом, меняется только позиция.
+const (
+	DirectPriorityAbsolute = "absolute"
+	DirectPriorityByOrder  = "byOrder"
+)
+
 type AppConfigNetfilter struct {
 	IPTables            AppConfigIPTables
 	IPSet               AppConfigIPSet
@@ -75,6 +90,7 @@ type AppConfigNetfilter struct {
 	DisableIPv6         bool
 	StartMarkTableIndex uint32
 	TProxyPort          uint16
+	DirectPriority      string
 }
 
 type AppConfigIPTables struct {

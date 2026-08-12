@@ -58,6 +58,7 @@ type Netfilter struct {
 	DisableIPv6         *bool     `yaml:"disableIPv6"`
 	StartMarkTableIndex *uint32   `yaml:"startMarkTableIndex"`
 	TProxyPort          *uint16   `yaml:"tproxyPort"`
+	DirectPriority      *string   `yaml:"directPriority"`
 }
 
 type IPTables struct {

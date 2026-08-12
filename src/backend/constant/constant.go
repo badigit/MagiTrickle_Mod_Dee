@@ -57,6 +57,8 @@ var DefaultAppConfig = models.AppConfig{
 		DisableIPv6:         false,
 		StartMarkTableIndex: 0x4D616769, // Magi
 		TProxyPort:          5001,
+		// Дефолт сохраняет поведение с .15: direct перебивает все группы.
+		DirectPriority: models.DirectPriorityAbsolute,
 	},
 	Link:              []string{"br0"},
 	ShowAllInterfaces: false,

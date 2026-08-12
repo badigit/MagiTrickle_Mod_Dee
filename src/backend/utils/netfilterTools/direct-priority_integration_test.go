@@ -1,9 +1,11 @@
-//go:build netns
+//go:build integration && linux
 
 // Интеграционные тесты приоритета direct-групп против НАСТОЯЩЕГО netfilter.
 //
-// Запускать только через scripts/netns-integration-test.sh: он поднимает пару
-// network namespace, соединённых veth, и стартует этот тест ВНУТРИ router-ns.
+// Тег общий с остальными интеграционными тестами пакета (client-routing), так
+// что все они запускаются одной командой. Запускать через
+// scripts/integration-test.sh: он поднимает пару network namespace,
+// соединённых veth, и стартует тесты ВНУТРИ router-ns.
 // Тогда и вызовы iptables (exec), и netlink-сокеты ipset из рабочего кода
 // попадают в изолированный namespace сами — продакшен-роутер и хостовые
 // правила не затрагиваются вообще.
@@ -36,12 +38,12 @@ const (
 func requireNetnsEnv(t *testing.T) (clientNS, targetIP string) {
 	t.Helper()
 	if os.Geteuid() != 0 {
-		t.Skip("нужен root: запускать через scripts/netns-integration-test.sh")
+		t.Skip("нужен root: запускать через scripts/integration-test.sh")
 	}
 	clientNS = os.Getenv("MT_ITEST_CLIENT_NS")
 	targetIP = os.Getenv("MT_ITEST_TARGET_IP")
 	if clientNS == "" || targetIP == "" {
-		t.Skip("нет MT_ITEST_* окружения: запускать через scripts/netns-integration-test.sh")
+		t.Skip("нет MT_ITEST_* окружения: запускать через scripts/integration-test.sh")
 	}
 	return clientNS, targetIP
 }

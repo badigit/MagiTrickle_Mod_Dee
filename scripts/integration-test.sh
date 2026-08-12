@@ -57,4 +57,4 @@ ip netns exec "$ROUTER_NS" sysctl -qw net.ipv4.ip_forward=1
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../src/backend"
 
-MT_ITEST_CLIENT_NS="$CLIENT_NS" MT_ITEST_TARGET_IP="$TARGET_IP"   ip netns exec "$ROUTER_NS" go test -tags "testing netns" -count=1 -v ./utils/netfilterTools/ -run NetnsDirectPriority "$@"
+MT_ITEST_CLIENT_NS="$CLIENT_NS" MT_ITEST_TARGET_IP="$TARGET_IP"   ip netns exec "$ROUTER_NS" go test -tags integration -count=1 -v ./utils/netfilterTools/ "$@"

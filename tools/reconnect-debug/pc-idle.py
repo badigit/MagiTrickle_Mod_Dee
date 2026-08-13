@@ -5,8 +5,9 @@
 # Вердикты: FIN-DURING-IDLE (server close ДОШЁЛ — цепочка честная),
 #           SILENT-TIMEOUT / RST-ON-PROBE (FIN потерян — зомби),
 #           ALIVE (T < серверного лимита 400с).
-# Матрица узлов: скрипт сам переключает proxy-группу (MIHOMO_GROUP) через mihomo API
-# и валидирует. Имя группы — из env или .router.env, в репозитории его нет.
+# Матрица узлов: состав группы спрашивается у самого mihomo, скрипт переключает
+# узлы по одному и валидирует. Имя группы — MIHOMO_GROUP из env или .router.env;
+# ни имени группы, ни списка узлов в репозитории нет.
 import json
 import os
 import pathlib
@@ -42,18 +43,19 @@ PROXY_PORT = 7891
 API = f"http://{ROUTER}:9090"
 HOST = "api.anthropic.com"
 T = int(sys.argv[1]) if len(sys.argv) > 1 else 430
-NODES = [
-    "<node>",
-    "<node>",
-    "<node>",
-    "<node>",
-]
-RESTORE = NODES[0]
+# Состав узлов в репозитории не хранится — он спрашивается у самого mihomo.
+SERVICE_NODES = {"DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"}
+
+
+def api_group() -> dict:
+    url = f"{API}/proxies/{urllib.parse.quote(GROUP)}"
+    with urllib.request.urlopen(url, timeout=5) as r:
+        return json.load(r)
 
 
 def api_put_node(name: str) -> None:
     req = urllib.request.Request(
-        f"{API}/proxies/{GROUP}",
+        f"{API}/proxies/{urllib.parse.quote(GROUP)}",
         data=json.dumps({"name": name}).encode(),
         method="PUT",
     )
@@ -61,8 +63,15 @@ def api_put_node(name: str) -> None:
 
 
 def api_now() -> str:
-    with urllib.request.urlopen(f"{API}/proxies/{GROUP}", timeout=5) as r:
-        return json.load(r)["now"]
+    return api_group()["now"]
+
+
+def discover_nodes() -> list:
+    """Матрица узлов: env NODES (через ';') либо состав группы из mihomo."""
+    env_nodes = _router_env("NODES")
+    if env_nodes:
+        return [n.strip() for n in env_nodes.split(";") if n.strip()]
+    return [n for n in api_group().get("all", []) if n not in SERVICE_NODES]
 
 
 def http_get(s) -> str:
@@ -129,8 +138,13 @@ def probe(node: str, T: int) -> tuple[str, str]:
 
 
 def main() -> None:
-    print(f"T={T}s host={HOST} via {ROUTER}:{PROXY_PORT}")
-    for node in NODES:
+    print(f"T={T}s host={HOST} via {ROUTER}:{PROXY_PORT} group={GROUP}")
+    nodes = discover_nodes()
+    if not nodes:
+        sys.exit(f"в группе {GROUP} нет узлов (проверь MIHOMO_GROUP)")
+    # восстанавливаем то, что было выбрано до прогона, а не первый узел списка
+    restore = api_now()
+    for node in nodes:
         api_put_node(node)
         time.sleep(1)
         now = api_now()
@@ -140,7 +154,7 @@ def main() -> None:
         t0 = time.strftime("%F %T")
         v, d = probe(node, T)
         print(f"{t0}\t{node}\tT={T}\t{v}\t{d}", flush=True)
-    api_put_node(RESTORE)
+    api_put_node(restore)
     print("restored:", api_now())
 
 

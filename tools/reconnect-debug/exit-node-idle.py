@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-# exit-node-idle.py — idle-порог keep-alive TLS-коннов с exit-ноды (сегмент D изолированно).
-# Пути: direct (дефолтный egress ноды) и warp (SO_BINDTODEVICE=warp).
+# exit-node-idle.py — idle-порог keep-alive TLS-коннов с выходного узла
+# (сегмент D изолированно). Запускается НА узле.
+# Пути: direct (дефолтный egress узла) и, если задан EXIT_IFACE, второй egress
+# через SO_BINDTODEVICE на этом интерфейсе. Имя интерфейса и хостер узла в
+# репозитории не хранятся — путь берётся из окружения.
 # Паттерн: GET -> ответ -> idle T -> GET#2 -> вердикт.
 # Отличает: ALIVE / FIN-DURING-IDLE / RST-ON-PROBE / SILENT-TIMEOUT / CONNFAIL.
-import socket, ssl, sys, time, threading
+import os, socket, ssl, sys, time, threading
 
 HOST = "api.anthropic.com"
 TS = [300, 420, 600]
-PATHS = ["direct", "warp"]
-OUT = "/tmp/exit-node-idle.tsv"
+IFACE = os.environ.get("EXIT_IFACE", "").strip()
+PATHS = ["direct"] + ([IFACE] if IFACE else [])
+OUT = os.environ.get("OUT", "/tmp/exit-node-idle.tsv")
 lock = threading.Lock()
 
 def req(s):
@@ -28,11 +32,11 @@ def one(path, T):
     verdict, detail = "?", "-"
     try:
         raw = socket.create_connection((HOST, 443), timeout=15)
-        if path == "warp":
+        if path != "direct":
             # пересоздаём с bind-to-device (нужен коннект заново)
             raw.close()
             raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            raw.setsockopt(socket.SOL_SOCKET, 25, b"warp")  # SO_BINDTODEVICE
+            raw.setsockopt(socket.SOL_SOCKET, 25, path.encode())  # SO_BINDTODEVICE
             raw.settimeout(15)
             raw.connect((HOST, 443))
         ctx = ssl.create_default_context()

@@ -29,8 +29,9 @@ Forensic, read-only. Triage data only — interpretation belongs to the parent s
    - Listener mismatch → diff `listeners-tcp.txt` against expected (magitrickled :3553+:8080, mihomo :6868+:7890+:7891+:9090, ndnproxy :53).
 
 4. **If mihomo source-level question arises** (is this a known bug, has it been fixed?):
-   - Local clone is at `<HOME>/GitHub/mihomo` (branch `Meta`, upstream `MetaCubeX/mihomo`).
-   - `git -C <HOME>/GitHub/mihomo fetch origin Meta` to refresh.
+   - Path to the local mihomo clone is not stored in this repo: take it from `$MIHOMO_REPO`
+     (or ask the user). Upstream is `MetaCubeX/mihomo`, working branch `Meta`.
+   - `git -C "$MIHOMO_REPO" fetch origin Meta` to refresh.
    - Read relevant files directly (no network calls): `dns/{dot,doh,doq}.go`, `tunnel/dns_dialer.go`, `tunnel/statistic/{tracker,manager}.go`, `component/proxydialer/proxydialer.go`.
    - Use `git log --oneline --grep=<keyword>` to find prior fixes.
 

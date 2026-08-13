@@ -12,7 +12,7 @@
 
 - Спека: `.designs/bd-mt-yvf/spec.md`. При расхождении плана со спекой — прав спек, сообщить оркестратору.
 - Сборка и тесты ТОЛЬКО через WSL, никогда напрямую на Windows:
-  `wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing ./...'`
+  `wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go test -tags testing ./...'`
 - Комментарии в коде и сообщения коммитов — по-русски. Без AI-атрибуции и `Co-Authored-By`.
 - Коммитить после каждой задачи. Push — только по явной просьбе разработчика.
 - `iptables-restore` НЕ убиваем по приходу события (замер прода: полный проход 34–79 мс). Прерываем только ожидание между попытками.
@@ -246,7 +246,7 @@ func (ipt *FakeIPTables) DropChain(table, chain string) {
 - [ ] **Step 4: Запустить тесты и убедиться, что они падают**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run "Wake|Converg|Idempotent|Flush" ./utils/iptables/ 2>&1 | grep -v "^{" | head -20'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go test -tags testing -run "Wake|Converg|Idempotent|Flush" ./utils/iptables/ 2>&1 | grep -v "^{" | head -20'
 ```
 
 Ожидается: `undefined: ipt.CommitWithRetryWake` (ошибка компиляции).
@@ -335,7 +335,7 @@ func (ipt *IPTables) commitRetryPass(ctx context.Context, wake <-chan struct{}) 
 - [ ] **Step 6: Запустить весь пакет с -race**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -race ./utils/iptables/ 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go test -tags testing -race ./utils/iptables/ 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
 Ожидается: `ok magitrickle/utils/iptables`. Старые тесты должны пройти без правок — это проверка того, что обёртка не изменила поведение.
@@ -700,7 +700,7 @@ func TestCommitterReconcileDoesNotSurvivePause(t *testing.T) {
 - [ ] **Step 2: Запустить тесты и убедиться, что они падают**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -run Committer . 2>&1 | grep -v "^{" | head -20'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go test -tags testing -run Committer . 2>&1 | grep -v "^{" | head -20'
 ```
 
 Ожидается: `undefined: startNetfilterCommitter` (ошибка компиляции).
@@ -928,7 +928,7 @@ func (c *netfilterCommitter) run(ctx context.Context) {
 - [ ] **Step 4: Запустить тесты с -race**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go test -tags testing -race -run Committer -count=3 . 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go test -tags testing -race -run Committer -count=3 . 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
 `-count=3` — проверка на флаки. Ожидается: `ok magitrickle`.
@@ -1117,7 +1117,7 @@ func (a *App) SetEnabled(enabled bool) error {
 Убедиться, что в `src/backend/app.go` импортирован `errors` (нужен для `errors.Join`). Затем:
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
 Ожидается: сборка без ошибок, все пакеты `ok`.
@@ -1319,7 +1319,7 @@ func (a *App) RequestNetfilterCommit() {
 - [ ] **Step 6: Собрать и прогнать всё**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
 Ожидается: все пакеты `ok`.
@@ -1397,7 +1397,7 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 `context` в `src/backend/api/v1/handlers.go` использовался ТОЛЬКО в удалённой строке `ForceCommitIPTables(context.Background())`. Проверить и убрать из блока импортов, иначе сборка упадёт на `imported and not used`:
 
 ```bash
-wsl -e bash -c 'cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && grep -n "context\." api/v1/handlers.go | head'
+wsl -e bash -c 'cd src/backend && grep -n "context\." api/v1/handlers.go | head'
 ```
 
 Если вывод пуст — удалить строку `"context"` из импортов `api/v1/handlers.go`.
@@ -1405,7 +1405,7 @@ wsl -e bash -c 'cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spen
 - [ ] **Step 4: Собрать и прогнать всё**
 
 ```bash
-wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01/src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
+wsl -e bash -c 'export PATH="$HOME/.local/bin:$PATH" && eval "$(fnm env)" && cd src/backend && GOOS=linux go build ./... && GOOS=linux go vet -tags testing ./... && GOOS=linux go test -tags testing -race ./... 2>&1 | grep -E "^(ok|FAIL|---)"'
 ```
 
 Ожидается: все пакеты `ok`.
@@ -1448,7 +1448,7 @@ ssh <ROUTER_SSH> '/opt/etc/init.d/S99magitrickle restart'
 Выполнять в **Git Bash**, не в PowerShell: подстановки `$(...)`, `${TAG%.*}` и `$((...))` — синтаксис POSIX-шелла.
 
 ```bash
-cd "<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01" && TAG=$(git describe --tags --abbrev=0) && COMMIT=$(git rev-parse --short HEAD) && PRERELEASE="${TAG%.*}.$((${TAG##*.}+1))" && DATE=$(date +%Y%m%d%H%M%S) && PKGVER="${PRERELEASE}~git${DATE}.${COMMIT}" && echo "PKG_VERSION=$PKGVER" && wsl -e bash -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && eval \"\$(fnm env)\" && cd /mnt/c/<HOME>/GitHub/MagiTrickle/.claude/worktrees/happy-spence-498b01 && export PKG_VERSION='$PKGVER' PKG_VERSION_PRERELEASE='$PRERELEASE' && make PLATFORM=entware TARGET=aarch64-3.10_kn GOOS=linux GOARCH=arm64 GOMIPS= 2>&1 | tail -3"
+TAG=$(git describe --tags --abbrev=0) && COMMIT=$(git rev-parse --short HEAD) && PRERELEASE="${TAG%.*}.$((${TAG##*.}+1))" && DATE=$(date +%Y%m%d%H%M%S) && PKGVER="${PRERELEASE}~git${DATE}.${COMMIT}" && echo "PKG_VERSION=$PKGVER" && wsl -e bash -c "export PATH=\"\$HOME/.local/bin:\$PATH\" && eval \"\$(fnm env)\" && export PKG_VERSION='$PKGVER' PKG_VERSION_PRERELEASE='$PRERELEASE' && make PLATFORM=entware TARGET=aarch64-3.10_kn GOOS=linux GOARCH=arm64 GOMIPS= 2>&1 | tail -3"
 ```
 
 PKG_VERSION вычисляется на Windows-стороне: в worktree WSL-git не читает `.git` с Windows-путём и версия ломается.

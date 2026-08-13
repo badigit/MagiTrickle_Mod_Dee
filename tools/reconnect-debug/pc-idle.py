@@ -5,7 +5,8 @@
 # Вердикты: FIN-DURING-IDLE (server close ДОШЁЛ — цепочка честная),
 #           SILENT-TIMEOUT / RST-ON-PROBE (FIN потерян — зомби),
 #           ALIVE (T < серверного лимита 400с).
-# Матрица узлов: скрипт сам переключает <MIHOMO_SELECTOR> через mihomo API и валидирует.
+# Матрица узлов: скрипт сам переключает proxy-группу (MIHOMO_GROUP) через mihomo API
+# и валидирует. Имя группы — из env или .router.env, в репозитории его нет.
 import json
 import os
 import pathlib
@@ -36,6 +37,7 @@ def _router_env(key, default=None):
 
 
 ROUTER = _router_env("ROUTER_IP") or sys.exit("не задан ROUTER_IP: env или .router.env")
+GROUP = _router_env("MIHOMO_GROUP") or sys.exit("не задан MIHOMO_GROUP (имя proxy-группы mihomo): env или .router.env")
 PROXY_PORT = 7891
 API = f"http://{ROUTER}:9090"
 HOST = "api.anthropic.com"
@@ -51,7 +53,7 @@ RESTORE = NODES[0]
 
 def api_put_node(name: str) -> None:
     req = urllib.request.Request(
-        f"{API}/proxies/<MIHOMO_SELECTOR>",
+        f"{API}/proxies/{GROUP}",
         data=json.dumps({"name": name}).encode(),
         method="PUT",
     )
@@ -59,7 +61,7 @@ def api_put_node(name: str) -> None:
 
 
 def api_now() -> str:
-    with urllib.request.urlopen(f"{API}/proxies/<MIHOMO_SELECTOR>", timeout=5) as r:
+    with urllib.request.urlopen(f"{API}/proxies/{GROUP}", timeout=5) as r:
         return json.load(r)["now"]
 
 

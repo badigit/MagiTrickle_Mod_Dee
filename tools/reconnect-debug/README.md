@@ -152,14 +152,14 @@ reply-tuple. Длительность spell — между `SPELL-START` и `SPE
 - `exit-node-idle.py` (exit-нода) / `pc-idle.py` (ПК) — python: тот же паттерн, но с
   прослушкой сокета всю паузу → точный вердикт ALIVE / FIN-DURING-IDLE / RST /
   SILENT-TIMEOUT. `pc-idle.py [T]` сам гоняет матрицу узлов через mihomo API
-  (переключает <MIHOMO_SELECTOR>, restore в конце).
+  (переключает proxy-группу из `MIHOMO_GROUP`, restore в конце).
 
 **Факты, установленные этими зондами (2026-07-16/17, ночное окно):**
 - Активные потоки (down И up) через туннель не умирают (25 мин, 0 стойлов) — даже
   сквозь вечерние волны RST-берстов реального трафика.
 - api.anthropic.com edge закрывает idle keep-alive конны **FIN'ом ровно на ~400с**;
   idle до 390с переживается; FIN доносится до ПК через ВСЕ узлы (многохоповый gRPC ×2,
-  <node-owner-2> WS, <node-host> single-hop). Ночью цепочка честная end-to-end.
+  <node-owner-2> WS, single-hop у третьего провайдера). Ночью цепочка честная end-to-end.
 - Оба «вечерних вердикта» (idle-killer, потеря FIN) НЕ подтвердились — открытым
   остаётся только механизм вечерних шторм-окон по Anthropic-коннам (160.79.104.10,
   216.150.x). Ловить: `pc-idle.py` + tcpdump В МОМЕНТ live-«retrying» у пользователя.

@@ -20,3 +20,6 @@ tools/reconnect-debug/watchdog.conf
 
 # Beads: runtime-каталог прокси (требуется bd 1.1.0)
 .beads/proxieddb/
+
+# Локальные адреса роутеров (см. .router.env.example) — не коммитить
+/.router.env

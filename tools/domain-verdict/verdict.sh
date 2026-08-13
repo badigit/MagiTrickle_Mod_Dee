@@ -9,7 +9,8 @@
 #   --host <цель>            ssh-алиас из ~/.ssh/config или user@адрес
 #   ROUTER_SSH=<цель>        то же переменной окружения
 #   ROUTER_PORT=<порт>       если цель без алиаса и порт нестандартный
-# По умолчанию — root@<ROUTER_IP> из ROUTER_IP/ROUTER_PORT, как в scripts/speedtest.sh.
+# Значения можно держать в .router.env в корне репо (см. .router.env.example,
+# сам файл — в .gitignore). Адресов в репозитории нет.
 set -euo pipefail
 
 # Git Bash иначе перепишет /opt/bin/sh в C:/Program Files/... — путь уедет в Windows
@@ -32,21 +33,28 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ssh-цель: явный алиас перекрывает всё; иначе собираем из ROUTER_IP/ROUTER_PORT
-SSH_OPTS="-o ConnectTimeout=10"
-if [ -z "$SSH_HOST" ]; then
-  SSH_HOST="root@${ROUTER_IP:-<ROUTER_IP>}"
-  SSH_OPTS="$SSH_OPTS -p ${ROUTER_PORT:-222}"
-elif [ -n "${ROUTER_PORT:-}" ]; then
-  SSH_OPTS="$SSH_OPTS -p $ROUTER_PORT"
-fi
-
 if [ -z "$TARGET" ]; then
   echo "нужен домен или URL. пример: verdict.sh https://example.com/path" >&2
   exit 2
 fi
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+
+# ssh-цель: явный --host перекрывает всё, затем окружение, затем локальный .router.env
+SSH_OPTS="-o ConnectTimeout=10"
+if [ -f "$ROOT/.router.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/.router.env"
+  SSH_HOST="${SSH_HOST:-${ROUTER_SSH:-}}"
+fi
+if [ -z "$SSH_HOST" ]; then
+  [ -n "${ROUTER_IP:-}" ] || { echo "не задана цель: --host, ROUTER_SSH или ROUTER_IP (env либо .router.env)" >&2; exit 2; }
+  SSH_HOST="root@$ROUTER_IP"
+  SSH_OPTS="$SSH_OPTS -p ${ROUTER_PORT:-222}"
+elif [ -n "${ROUTER_PORT:-}" ]; then
+  SSH_OPTS="$SSH_OPTS -p $ROUTER_PORT"
+fi
+
 SCRIPT="$ROOT/tools/domain-verdict/domain-verdict.sh"
 [ -r "$SCRIPT" ] || { echo "не найден $SCRIPT" >&2; exit 1; }
 

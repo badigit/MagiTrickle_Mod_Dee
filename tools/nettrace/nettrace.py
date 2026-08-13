@@ -21,6 +21,7 @@ import ctypes.wintypes as wt
 import ipaddress
 import json
 import os
+import pathlib
 import socket
 import sys
 import threading
@@ -807,12 +808,35 @@ def do_import(args):
     push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide, labels)
 
 
+def _router_env(key, default=None):
+    """Router address is never stored in the repo: env var or .router.env at the
+    repo root (see .router.env.example; the file itself is gitignored)."""
+    val = os.environ.get(key)
+    if val:
+        return val
+    cfg = pathlib.Path(__file__).resolve().parents[2] / ".router.env"
+    if cfg.exists():
+        for line in cfg.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'")
+    return default
+
+
+def _default_mt_url():
+    ip = _router_env("ROUTER_IP")
+    return f"http://{ip}:8080/api/v1/lookup" if ip else ""
+
+
 def build_parser():
     p = argparse.ArgumentParser(description="Per-process TCP+UDP network diagnostic (ETW) with MagiTrickle annotation.")
     p.add_argument("-n", "--name", action="append", help="process name substring (repeatable)")
     p.add_argument("--pid", action="append", type=int, help="filter by PID (repeatable)")
     p.add_argument("--for", "--duration", dest="duration", type=int, default=0, help="seconds (0=until Ctrl+C)")
-    p.add_argument("--mt-url", default="http://<ROUTER_IP>:8080/api/v1/lookup", help="MagiTrickle lookup endpoint ('' to disable)")
+    p.add_argument("--mt-url", default=_default_mt_url(), help="MagiTrickle lookup endpoint ('' to disable; default from ROUTER_IP / .router.env)")
     p.add_argument("--check-ipset", dest="check_ipset", action="store_true", default=True, help="query live ipset membership (default on)")
     p.add_argument("--no-check-ipset", dest="check_ipset", action="store_false")
     p.add_argument("--no-geo", action="store_true", help="disable ASN/country lookup")

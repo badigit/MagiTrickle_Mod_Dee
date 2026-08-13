@@ -7,6 +7,8 @@
 #           ALIVE (T < серверного лимита 400с).
 # Матрица узлов: скрипт сам переключает <MIHOMO_SELECTOR> через mihomo API и валидирует.
 import json
+import os
+import pathlib
 import socket
 import ssl
 import sys
@@ -14,7 +16,26 @@ import time
 import urllib.parse
 import urllib.request
 
-ROUTER = "<ROUTER_IP>"
+
+def _router_env(key, default=None):
+    """Адрес роутера в репозитории не хранится: env или .router.env в корне репо
+    (см. .router.env.example, сам файл — в .gitignore)."""
+    val = os.environ.get(key)
+    if val:
+        return val
+    cfg = pathlib.Path(__file__).resolve().parents[2] / ".router.env"
+    if cfg.exists():
+        for line in cfg.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'")
+    return default
+
+
+ROUTER = _router_env("ROUTER_IP") or sys.exit("не задан ROUTER_IP: env или .router.env")
 PROXY_PORT = 7891
 API = f"http://{ROUTER}:9090"
 HOST = "api.anthropic.com"

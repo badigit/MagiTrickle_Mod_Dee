@@ -2,8 +2,15 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOST_ALIAS="root@<ROUTER_IP>"
-SSH_PORT="222"
+# Адрес роутера в репозитории не хранится: берём из окружения или из локального
+# .router.env в корне репо (см. .router.env.example, сам файл — в .gitignore).
+if [ -f "$ROOT_DIR/.router.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/.router.env"
+fi
+
+HOST_ALIAS="${ROUTER_SSH:?не задан ROUTER_SSH (ssh-алиас или user@адрес): env или .router.env}"
+SSH_PORT="${ROUTER_PORT:-222}"
 REMOTE_TMP_DIR="/opt/root/tmp"
 
 shopt -s nullglob

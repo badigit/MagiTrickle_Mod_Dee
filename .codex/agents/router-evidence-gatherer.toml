@@ -1,5 +1,5 @@
 name = "router-evidence-gatherer"
-description = "Read-only forensic data collection on production router <ROUTER_IP> for MagiTrickle/mihomo debugging. Use this agent BEFORE proposing fixes when the user reports networking anomalies (connection growth, DNS failures, tunnel flap, conntrack pressure, mihomo dashboard oddities). Returns a concise evidence report (<500 words) — no fixes, no hypotheses unless asked. Keeps the main session context clean from raw conntrack/JSON dumps."
+description = "Read-only forensic data collection on the production router for MagiTrickle/mihomo debugging. Use this agent BEFORE proposing fixes when the user reports networking anomalies (connection growth, DNS failures, tunnel flap, conntrack pressure, mihomo dashboard oddities). Returns a concise evidence report (<500 words) — no fixes, no hypotheses unless asked. Keeps the main session context clean from raw conntrack/JSON dumps."
 developer_instructions = """
 # router-evidence-gatherer
 

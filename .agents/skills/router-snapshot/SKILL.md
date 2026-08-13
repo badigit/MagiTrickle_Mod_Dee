@@ -1,6 +1,6 @@
 ---
 name: router-snapshot
-description: Снимок состояния продакшен-роутера <ROUTER_IP> (conntrack, mihomo /connections, magitrickle, listeners, конфиги) в один ssh-проход. Сохраняет в .tmp/snapshots/<ts>/, умеет diff'ить два snapshot'а. Используй когда пользователь просит "посмотри что на роутере", при дебаге сетевых аномалий, при подозрении на утечки коннектов или DNS/прокси-проблемы.
+description: Снимок состояния продакшен-роутера (conntrack, mihomo /connections, magitrickle, listeners, конфиги) в один ssh-проход. Сохраняет в .tmp/snapshots/<ts>/, умеет diff'ить два snapshot'а. Используй когда пользователь просит "посмотри что на роутере", при дебаге сетевых аномалий, при подозрении на утечки коннектов или DNS/прокси-проблемы.
 ---
 
 # router-snapshot

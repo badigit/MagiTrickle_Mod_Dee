@@ -4,7 +4,15 @@ set -euo pipefail
 # Speed test through different proxy paths
 # Run from an external device (e.g. WSL) that routes through the router
 
-ROUTER_IP="${ROUTER_IP:-<ROUTER_IP>}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Адрес роутера в репозитории не хранится: берём из окружения или из локального
+# .router.env в корне репо (см. .router.env.example, сам файл — в .gitignore).
+if [ -f "$ROOT_DIR/.router.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT_DIR/.router.env"
+fi
+
+ROUTER_IP="${ROUTER_IP:?не задан ROUTER_IP (адрес роутера): env или .router.env}"
 MT_PORT="${MT_PORT:-8080}"
 MT_DNS_PORT="${MT_DNS_PORT:-3553}"
 SOCKS_PORT="${SOCKS_PORT:-7890}"

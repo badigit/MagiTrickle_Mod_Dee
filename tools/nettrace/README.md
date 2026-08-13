@@ -66,7 +66,7 @@ Color = MagiTrickle intent (not actual path — see limitation):
 | `-n NAME` | process-name substring (repeatable) |
 | `--pid N` | filter by PID (repeatable) |
 | `--for N` | run N seconds (0 = until Ctrl+C) |
-| `--mt-url URL` | MagiTrickle lookup endpoint (default `http://<ROUTER_IP>:8080/api/v1/lookup`; `''` disables) |
+| `--mt-url URL` | MagiTrickle lookup endpoint (default from `ROUTER_IP` / `.router.env`; `''` disables) |
 | `--no-check-ipset` | rule-match only, skip live ipset query |
 | `--no-udp` / `--no-tcp` | restrict protocol |
 | `--no-geo` | skip ASN/country lookup |

@@ -1,5 +1,5 @@
 param(
-  [string]$HostAlias = "<ROUTER_SSH>",
+  [string]$HostAlias = $(if ($env:ROUTER_SSH) { $env:ROUTER_SSH } else { throw "не задан ROUTER_SSH (ssh-алиас или user@адрес) — задай env или передай -HostAlias" }),
   [string]$RemoteTmpDir = "/opt/root/tmp",
   [string]$PackagePath = ""
 )

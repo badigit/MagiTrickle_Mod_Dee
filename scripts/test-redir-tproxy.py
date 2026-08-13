@@ -32,17 +32,38 @@ import socket
 import ssl
 import struct
 import subprocess
+import os
+import pathlib
 import time
 import json
 import urllib.request
 import sys
 
-ROUTER_IP = "<ROUTER_IP>"
+
+def _router_env(key, default=None):
+    """Адрес роутера в репозитории не хранится: env или .router.env в корне репо
+    (см. .router.env.example, сам файл — в .gitignore)."""
+    val = os.environ.get(key)
+    if val:
+        return val
+    cfg = pathlib.Path(__file__).resolve().parents[1] / ".router.env"
+    if cfg.exists():
+        for line in cfg.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip() == key:
+                return v.strip().strip('"').strip("'")
+    return default
+
+
+ROUTER_IP = _router_env("ROUTER_IP") or sys.exit("не задан ROUTER_IP: env или .router.env")
 MAGITRICKLE_DNS_PORT = 3553
 SOCKS5_PORT = 7890
 MIHOMO_API = f"http://{ROUTER_IP}:9090"
 MIHOMO_AUTH = "Bearer 1"
-LOCAL_IP = "<ROUTER_IP>"
+LOCAL_IP = _router_env("LOCAL_IP") or sys.exit("не задан LOCAL_IP: env или .router.env")
 LOCAL_CURL_IFACE = "eth1" if sys.platform != "win32" else LOCAL_IP
 
 TCP_DOMAINS = ["google.com", "discord.com", "api.anthropic.com"]

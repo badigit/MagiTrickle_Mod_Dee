@@ -1,8 +1,16 @@
 #!/usr/bin/env bash
-# router-snapshot: одним ssh-pipe собирает состояние <ROUTER_IP>.
+# router-snapshot: одним ssh-pipe собирает состояние роутера.
+# Цель — ROUTER_SSH/ROUTER_IP из окружения или .router.env в корне репо
+# (см. .router.env.example, сам файл — в .gitignore).
 # Требует /opt/bin/tar (GNU) на роутере — `opkg install tar`.
 # Использование: bash snapshot.sh [label]
 set -euo pipefail
+
+# /bin/sh на Keenetic — это ndmsh (CLI роутера), он отвечает `Invalid option "-s"`;
+# нужен busybox из Entware. MSYS_NO_PATHCONV — чтобы Git Bash не переписал этот
+# путь в C:/Program Files/... при передаче в ssh.
+export MSYS_NO_PATHCONV=1
+REMOTE_SH="/opt/bin/sh"
 
 LABEL="${1:-}"
 TS=$(date +%Y%m%d-%H%M%S)
@@ -11,7 +19,23 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 OUT="$ROOT/.tmp/snapshots/$NAME"
 mkdir -p "$OUT"
 
-ssh -p 222 root@<ROUTER_IP> "TS=$TS LABEL='$LABEL' sh -s" <<'REMOTE_SH' | tar -xzf - -C "$OUT"
+# ssh-цель: окружение, затем локальный .router.env; адресов в репозитории нет
+SSH_OPTS="-o ConnectTimeout=10"
+SSH_HOST="${ROUTER_SSH:-}"
+if [ -z "$SSH_HOST" ] && [ -f "$ROOT/.router.env" ]; then
+  # shellcheck disable=SC1091
+  . "$ROOT/.router.env"
+  SSH_HOST="${ROUTER_SSH:-}"
+fi
+if [ -z "$SSH_HOST" ]; then
+  [ -n "${ROUTER_IP:-}" ] || { echo "не задана цель: ROUTER_SSH или ROUTER_IP (env либо .router.env)" >&2; exit 2; }
+  SSH_HOST="root@$ROUTER_IP"
+  SSH_OPTS="$SSH_OPTS -p ${ROUTER_PORT:-222}"
+elif [ -n "${ROUTER_PORT:-}" ]; then
+  SSH_OPTS="$SSH_OPTS -p $ROUTER_PORT"
+fi
+
+ssh $SSH_OPTS "$SSH_HOST" "TS=$TS LABEL='$LABEL' $REMOTE_SH -s" <<'REMOTE_SH' | tar -xzf - -C "$OUT"
 set -e
 D="/tmp/snap-$TS"
 mkdir -p "$D"
@@ -37,4 +61,4 @@ rm -rf "$D"
 REMOTE_SH
 
 echo "snapshot: $OUT"
-echo "analyze:  python3 .claude/skills/router-snapshot/scripts/analyze.py \"$OUT\""
+echo "analyze:  python3 .agents/skills/router-snapshot/scripts/analyze.py \"$OUT\""

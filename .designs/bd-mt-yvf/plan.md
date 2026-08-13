@@ -1533,7 +1533,7 @@ ssh <ROUTER_SSH> 'export PATH=$PATH:/opt/sbin:/opt/bin; echo "pid: $(pidof magit
 - [ ] **Step 9: Записать результат в задачу**
 
 ```bash
-bd comment mt-yvf "Полевая проверка на <ROUTER_IP>: <фактические числа и результаты diff из шагов 3-8>"
+bd comment mt-yvf "Полевая проверка на проде: <фактические числа и результаты diff из шагов 3-8>"
 ```
 
 ---

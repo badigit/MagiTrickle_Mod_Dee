@@ -14,6 +14,22 @@
 | Shell | BusyBox `sh` (нет `bash`, нет `python3`, нет `python`) |
 | Установленный GNU | `coreutils 9.6`, `findutils 4.10`, `tar 1.35` (в `/opt/bin/tar`, busybox симлинк перекрывает в `$PATH`) |
 
+### Откуда скрипты берут адрес
+
+Конкретных адресов в репозитории нет — везде плейсхолдеры `<ROUTER_IP>` / `<ROUTER_SSH>`.
+Скрипты (`scripts/deploy-*`, `scripts/speedtest.sh`, `scripts/test-redir-tproxy.py`,
+`tools/domain-verdict/`, `tools/nettrace/`, `tools/reconnect-debug/pc-idle.py`,
+скилл `router-snapshot`) читают их из переменных окружения или из `.router.env`
+в корне репо — он в `.gitignore`:
+
+```bash
+cp .router.env.example .router.env   # и подставить свои значения
+```
+
+Ключи: `ROUTER_SSH` (алиас или `user@адрес`), `ROUTER_PORT`, `ROUTER_IP` (для http-API),
+`ROUTER_SSH_MIPSEL`, `LOCAL_IP`. Без них скрипт не угадывает молча, а падает с указанием,
+чего не хватает.
+
 ### Грабли
 
 - **`scp` только Windows OpenSSH** — git-bash перехватывает MSYS-вариантом без доступа к Windows agent'у. Используем абсолютный `C:\Windows\System32\OpenSSH\scp.exe` или Windows OpenSSH в `~/bin/`.

@@ -31,6 +31,7 @@ export PATH
 TARGET=""
 REF_HOST="ya.ru"
 MT_API="${MT_API:-http://127.0.0.1:8080}"
+WINNER=""; WIN_NAME=""; WIN_WHY=""; WIN_PENDING=no
 PROXY="${PROXY:-http://127.0.0.1:7890}"
 
 # цель можно передать аргументом или переменными окружения DV_TARGET / DV_REF
@@ -109,6 +110,21 @@ else
     MT_HIT=yes
   else
     MT_HIT=no
+  fi
+  # winner появился в mt-ztg: демон сам называет победителя арбитража — теми же
+  # правилами, которыми ходит трафик. Берём вердикт ПЕРВОГО запроса (это сам
+  # домен; IP идут следом). На прошивке без mt-ztg поля нет, и вердикт ниже
+  # строится по совпадениям, как раньше.
+  # Привязка к своему query обязательна: в ответе несколько результатов (домен
+  # и его IP), а жадная `.*` без якоря утащила бы winner ПОСЛЕДНЕГО из них —
+  # для домена показывался бы ipset-first от IP-запроса.
+  WINNER=`echo "$LOOKUP" | sed -n 's/.*"query":"'"$HOST"'","winner":{\([^}]*\)}.*/\1/p' | head -n1`
+  if [ -n "$WINNER" ]; then
+    WIN_NAME=`echo "$WINNER" | sed -n 's/.*"group_name":"\([^"]*\)".*/\1/p'`
+    WIN_WHY=`echo "$WINNER" | sed -n 's/.*"why":"\([^"]*\)".*/\1/p'`
+    case "$WINNER" in *'"pending":true'*) WIN_PENDING=yes ;; *) WIN_PENDING=no ;; esac
+    echo "winner: группа \"$WIN_NAME\" (why=$WIN_WHY, pending=$WIN_PENDING)"
+    MT_HIT=yes
   fi
 fi
 echo "rule/ipset hits by API: $MT_HIT"

@@ -53,6 +53,11 @@ type Main interface {
 	WithConfigWrite(fn func())
 	WithConfigRead(fn func())
 	GroupByID(id intID.ID) (Group, bool)
+	// SearchDomainVerdict — арбитраж домена ровно тот же, что решает роутинг:
+	// группа-победитель и слой, которым выигран (models.LookupWhy*). API
+	// обязано спрашивать исход здесь, а не пересчитывать его по своим
+	// источникам, иначе объяснение разойдётся с фактическим поведением.
+	SearchDomainVerdict(domain string) (Group, string, bool)
 	ClearGroups()
 	AddGroup(groupModel *models.Group) error
 	RemoveGroupByIndex(idx int)

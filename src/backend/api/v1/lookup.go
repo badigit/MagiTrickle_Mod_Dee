@@ -151,11 +151,76 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			result.Winner = h.lookupWinner(qLower, qIP, result)
+
 			results[qi] = result
 		}
 	})
 
 	utils.WriteJson(w, http.StatusOK, types.LookupRes{Results: results})
+}
+
+// lookupWinner отвечает на главный вопрос пользователя — «а куда это пойдёт
+// НА САМОМ ДЕЛЕ» — по тем же правилам, которыми ходит трафик.
+//
+// Для домена исход спрашивается у ядра (SearchDomainVerdict), а не считается
+// здесь: у lookup шире источники (модели подписок вместо их рантайм-групп), и
+// собственный подсчёт разошёлся бы с роутингом ровно в спорных случаях, ради
+// которых winner и добавлен (mt-ztg, корень жалоб mt-4ho/mt-4pl/mt-1wg).
+//
+// Для IP победителя определяет ipset: первая по порядку группа, в чьём сете
+// адрес уже лежит, — это буквально то, что увидит пакет. Если сет пуст, но
+// адрес попадает в подсеть правила, победитель называется с Pending: правило
+// сработает, когда домен резолвится через MagiTrickle или пройдёт sync.
+func (h *Handler) lookupWinner(query string, qIP net.IP, result types.LookupResult) *types.LookupWinner {
+	if qIP != nil {
+		if len(result.IpsetHits) > 0 {
+			hit := result.IpsetHits[0]
+			return &types.LookupWinner{
+				GroupID:   hit.GroupID,
+				GroupName: hit.GroupName,
+				Source:    hit.Source,
+				Why:       models.LookupWhyIpsetFirst,
+			}
+		}
+		for _, hit := range result.RuleHits {
+			if hit.RuleType != models.RuleTypeSubnet && hit.RuleType != models.RuleTypeSubnet6 {
+				continue
+			}
+			return &types.LookupWinner{
+				GroupID:   hit.GroupID,
+				GroupName: hit.GroupName,
+				Source:    hit.Source,
+				Why:       models.LookupWhySubnet,
+				Pending:   true,
+			}
+		}
+		return nil
+	}
+
+	group, why, found := h.app.SearchDomainVerdict(query)
+	if !found {
+		return nil
+	}
+	m := group.Model()
+	return &types.LookupWinner{
+		GroupID:   m.ID.String(),
+		GroupName: m.Name,
+		Source:    winnerSource(m.ID.String(), result.RuleHits),
+		Why:       why,
+	}
+}
+
+// winnerSource достаёт источник (группа или подписка) из уже собранных
+// совпадений: SearchDomainVerdict возвращает рантайм-группу, а пользователю
+// важно, из подписки её правило или своё.
+func winnerSource(groupID string, hits []types.RuleHit) string {
+	for _, hit := range hits {
+		if hit.GroupID == groupID {
+			return hit.Source
+		}
+	}
+	return "group"
 }
 
 type lookupSource struct {

@@ -167,16 +167,31 @@ func (a *App) RebuildTrie() {
 }
 
 // searchDomain looks up a domain in the trie, then falls back to wildcard and regex rules.
+// Тонкая обёртка над searchDomainExplain: одна реализация на решение и на его
+// объяснение — иначе winner в /api/v1/lookup начнёт расходиться с фактическим
+// роутингом (mt-ztg).
+func (a *App) searchDomain(domain string) (*Group, bool) {
+	g, _, found := a.searchDomainExplain(domain)
+	return g, found
+}
+
+// searchDomainExplain — тот же арбитраж, что и searchDomain, плюс слой, которым
+// домен выигран: models.LookupWhy{Exact,Namespace,Wildcard,Regex}. Порядок слоёв
+// и групп замораживает продуктовую политику mt-7rd (Вариант 1).
 // Держит cfgMu.RLock: step 3 (regex-fallback) читает g.Rules/rule.Rule, которые
 // API-писатели мутируют in-place под cfgMu.Lock. НЕ вызывать под уже взятым cfgMu.
-func (a *App) searchDomain(domain string) (*Group, bool) {
+func (a *App) searchDomainExplain(domain string) (*Group, string, bool) {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
 
 	// 1. Trie lookup — O(domain parts)
-	if data, found := a.Trie().Search(domain); found {
+	if data, kind, found := a.Trie().SearchExplain(domain); found {
 		if g, ok := data.(*Group); ok && g.Enabled() && g.Group.Enable {
-			return g, true
+			why := models.LookupWhyNamespace
+			if kind == trie.KindExact {
+				why = models.LookupWhyExact
+			}
+			return g, why, true
 		}
 	}
 
@@ -187,7 +202,7 @@ func (a *App) searchDomain(domain string) (*Group, bool) {
 	for _, wr := range wRules {
 		if wildcard.Match(wr.Rule, domain) {
 			if wr.Group.Enabled() && wr.Group.Group.Enable {
-				return wr.Group, true
+				return wr.Group, models.LookupWhyWildcard, true
 			}
 		}
 	}
@@ -202,12 +217,23 @@ func (a *App) searchDomain(domain string) (*Group, bool) {
 				continue
 			}
 			if rule.IsMatch(domain) {
-				return g, true
+				return g, models.LookupWhyRegex, true
 			}
 		}
 	}
 
-	return nil, false
+	return nil, "", false
+}
+
+// SearchDomainVerdict — экспортируемый арбитраж для API: та же функция, что
+// решает роутинг, чтобы /api/v1/lookup объяснял исход, а не пересчитывал его по
+// своим источникам (у lookup они шире: модели подписок вместо их рантайм-групп).
+func (a *App) SearchDomainVerdict(domain string) (app.Group, string, bool) {
+	g, why, found := a.searchDomainExplain(domain)
+	if !found {
+		return nil, "", false
+	}
+	return g, why, true
 }
 
 // Config возвращает конфигурацию

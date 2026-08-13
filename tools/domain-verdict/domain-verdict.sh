@@ -262,7 +262,14 @@ elif [ "$OURS" = no ] && [ "$OK_DIRECT" = no ] && [ "$OK_PROXY" = no ]; then
     echo "   Эталон $REF_HOST доступен -> похоже, лежит сам сервис/CDN. Сторона сервера."
   fi
 else
-  echo "НАШ РОУТИНГ УЧАСТВУЕТ: есть совпадение с правилом MT и/или IP лежит в ipset (см. секции выше)."
+  if [ -n "$WIN_NAME" ]; then
+    echo "НАШ РОУТИНГ УЧАСТВУЕТ: арбитраж MT выигрывает группа \"$WIN_NAME\" (why=$WIN_WHY)."
+    if [ "$WIN_PENDING" = yes ]; then
+      echo "   pending: правило совпало, но IP ещё не в ipset — прямо сейчас трафик идёт МИМО этой группы."
+    fi
+  else
+    echo "НАШ РОУТИНГ УЧАСТВУЕТ: есть совпадение с правилом MT и/или IP лежит в ipset (см. секции выше)."
+  fi
   echo "   direct: code=$DIRECT_URL_CODE, через прокси: code=$PROXY_CODE."
   if [ "$OK_PROXY" = no ]; then
     echo "-> Проксируемый путь неисправен: смотреть группу и ноду mihomo (/connections, логи, health-check)."

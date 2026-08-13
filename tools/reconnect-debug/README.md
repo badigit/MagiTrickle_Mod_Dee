@@ -149,23 +149,26 @@ reply-tuple. Длительность spell — между `SPELL-START` и `SPE
   тому же TLS-конну, tunnel vs direct. ⚠️ ГРАБЛЯ ИНТЕРПРЕТАЦИИ: socat НЕ различает
   server-FIN и тихую смерть (`dur==T` всегда — command substitution ждёт писателя,
   а не socat). Для FIN/RST/silence-вердикта — только python-зонды ниже.
-- `exit-node-idle.py` (exit-нода) / `pc-idle.py` (ПК) — python: тот же паттерн, но с
-  прослушкой сокета всю паузу → точный вердикт ALIVE / FIN-DURING-IDLE / RST /
-  SILENT-TIMEOUT. `pc-idle.py [T]` сам гоняет матрицу узлов через mihomo API
-  (переключает профиль freedom, restore в конце).
+- `exit-node-idle.py` (на выходном узле) / `pc-idle.py` (ПК) — python: тот же
+  паттерн, но с прослушкой сокета всю паузу → точный вердикт ALIVE /
+  FIN-DURING-IDLE / RST / SILENT-TIMEOUT. `pc-idle.py [T]` сам гоняет матрицу
+  узлов: состав спрашивает у mihomo по selector-группе (`MIHOMO_SELECTOR`),
+  переключает по одному и в конце возвращает то, что было выбрано до прогона.
+  Второй egress узла для `exit-node-idle.py` задаётся `EXIT_IFACE`.
 
 **Факты, установленные этими зондами (2026-07-16/17, ночное окно):**
 - Активные потоки (down И up) через туннель не умирают (25 мин, 0 стойлов) — даже
   сквозь вечерние волны RST-берстов реального трафика.
 - api.anthropic.com edge закрывает idle keep-alive конны **FIN'ом ровно на ~400с**;
-  idle до 390с переживается; FIN доносится до ПК через ВСЕ узлы (многохоповый gRPC ×2,
-  <node-owner-2> WS, lease single-hop). Ночью цепочка честная end-to-end.
+  idle до 390с переживается; FIN доносится до ПК через **все проверенные узлы** —
+  и многохоповые, и одиночный хоп, независимо от транспорта. Ночью цепочка честная
+  end-to-end.
 - Оба «вечерних вердикта» (idle-killer, потеря FIN) НЕ подтвердились — открытым
-  остаётся только механизм вечерних шторм-окон по Anthropic-коннам (160.79.104.10,
-  216.150.x). Ловить: `pc-idle.py` + tcpdump В МОМЕНТ live-«retrying» у пользователя.
-- Направление Anthropic напрямую с RU-IP → 403 (гео-блок), с LV/NL — 404. Hetzner/
-  scaleway блочат RU-IP целиком (для direct-контроля годятся Cloudflare `__down`/`__up`
-  и proof.ovh.net).
+  остаётся только механизм вечерних шторм-окон по Anthropic-коннам. Ловить: `pc-idle.py` + tcpdump В МОМЕНТ live-«retrying» у пользователя.
+- Anthropic напрямую с локального IP → 403 (гео-блок), с зарубежного узла — 404,
+  то есть 404 здесь признак «дошли», а не ошибки. Часть хостеров режет входящий
+  локальный IP целиком, поэтому для direct-контроля годятся Cloudflare
+  `__down`/`__up` и proof.ovh.net.
 
 ## Смежные инструменты (см. docs/router-debug-playbook.md)
 - `router-snapshot` skill — точечный снимок (conntrack/listeners/configs).

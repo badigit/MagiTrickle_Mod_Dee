@@ -183,8 +183,9 @@ func (a *App) dnsResponseHook(clientAddr net.Addr, reqMsg dns.Msg, respMsg dns.M
 // capAnswersTTL возвращает копию answers, в которой A/AAAA/CNAME/HTTPS/SVCB с
 // TTL > ttlCap получают TTL = ttlCap. Записи с TTL <= ttlCap и прочие типы
 // переиспользуются как есть (тот же указатель). Копируются ТОЛЬКО капаемые RR —
-// чтобы не мутировать RR, которые параллельно читает handleMessage (в ipset
-// должен уйти ОРИГИНАЛЬНЫЙ TTL, cap не должен протечь). HTTPS/SVCB капаются по
+// чтобы не мутировать RR, которые потом разбирает handleMessage: его вызов
+// стоит в defer и отрабатывает синхронно уже после сборки клиентской копии, но
+// видеть он обязан ОРИГИНАЛЬНЫЙ TTL — иначе cap протечёт в ipset. HTTPS/SVCB капаются по
 // той же причине, что и A: клиент не должен держать адресные hints дольше
 // жизни ipset-записи (mt-ocy).
 func capAnswersTTL(answers []dns.RR, ttlCap uint32) []dns.RR {

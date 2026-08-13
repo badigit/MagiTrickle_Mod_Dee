@@ -163,7 +163,9 @@ func (a *App) routeHintIPv6(domainName string, ip net.IP, ttl uint32, idStr stri
 // удаляется целиком (иначе клиент обязан отбросить весь RR).
 //
 // Copy-on-write: копируются ТОЛЬКО изменяемые RR (dns.Copy), остальные
-// переиспользуются — оригинал respMsg.Answer параллельно читает handleMessage.
+// переиспользуются: handleMessage разбирает ОРИГИНАЛЬНЫЙ respMsg.Answer (defer
+// в dnsResponseHook отрабатывает синхронно уже после сборки клиентской копии),
+// и мутация RR на месте увела бы в ipset урезанный состав вместо исходного.
 func stripSVCBIPv6Hints(answers []dns.RR) []dns.RR {
 	out := make([]dns.RR, 0, len(answers))
 	for _, rr := range answers {

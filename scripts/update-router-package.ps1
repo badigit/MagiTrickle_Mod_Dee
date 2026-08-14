@@ -1,5 +1,8 @@
 param(
-  [string]$HostAlias = $(if ($env:ROUTER_SSH) { $env:ROUTER_SSH } else { throw "не задан ROUTER_SSH (ssh-алиас или user@адрес) — задай env или передай -HostAlias" }),
+  # ASCII-only on purpose: this line is parsed before anything runs, and
+  # Windows PowerShell 5.1 reads a BOM-less UTF-8 file as ANSI, which breaks
+  # the parser on non-ASCII text here (the file has no BOM by design).
+  [string]$HostAlias = $(if ($env:ROUTER_SSH) { $env:ROUTER_SSH } else { throw "ROUTER_SSH is not set (ssh alias or user@host): set the env var or pass -HostAlias" }),
   [string]$RemoteTmpDir = "/opt/root/tmp",
   [string]$PackagePath = ""
 )

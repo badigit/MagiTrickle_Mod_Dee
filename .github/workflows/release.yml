@@ -1,9 +1,12 @@
-name: Auto Release
+name: Release
 
+# Запуск ТОЛЬКО вручную: кнопка Run workflow в Actions или
+#   gh workflow run release.yml --ref mod_badigit
+# Каждый запуск сам считает следующую версию (последний тег *-badigit.* + 1),
+# создаёт тег и релиз с текстом из RELEASE_NOTES.md — поэтому два запуска
+# подряд дадут два релиза. Ветка release больше не используется и удалена.
 on:
-  push:
-    branches:
-      - release
+  workflow_dispatch:
 
 jobs:
   create_release:

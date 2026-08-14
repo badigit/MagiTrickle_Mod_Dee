@@ -37,7 +37,22 @@ func (a *App) RoutingGroups() []app.Group {
 	return out
 }
 
+// RebuildSubscriptionGroups пересобирает рантайм-группы подписок. Тело идёт под
+// routingMutationMu: перестройка выключает старые группы и включает новые, то
+// есть меняет те же цепочки, что и подъём/снятие роутинга. Без общей очереди
+// она вклинивается в чужой teardown/bring-up, и часть цепочек остаётся от
+// прошлого состояния.
+//
+// Вызывается и из-под cfgMu (автообновление подписок), поэтому порядок здесь
+// «cfgMu -> routingMutationMu»; обратный порядок запрещён (см. комментарий к
+// routingMutationMu в app.go).
 func (a *App) RebuildSubscriptionGroups() error {
+	a.routingMutationMu.Lock()
+	defer a.routingMutationMu.Unlock()
+	return a.rebuildSubscriptionGroupsLocked()
+}
+
+func (a *App) rebuildSubscriptionGroupsLocked() error {
 	oldGroups := *a.subscriptionGroups.Load()
 	if a.routingActive.Load() {
 		for _, group := range oldGroups {

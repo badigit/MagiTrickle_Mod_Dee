@@ -49,6 +49,11 @@ type Main interface {
 	// RoutingGroups — набор, по которому реально строится роутинг: базовые
 	// группы плюс рантайм-группы подписок (у них свои ipset).
 	RoutingGroups() []Group
+	// WithRoutingMutation сериализует операции, меняющие цепочки в ядре
+	// (включение/выключение групп). API обязано оборачивать в него свои
+	// Enable/Disable, иначе правка группы вклинивается в чужой teardown.
+	// Внутри fn нельзя брать конфиг-лок: см. routingMutationMu.
+	WithRoutingMutation(fn func() error) error
 	// WithConfigWrite/WithConfigRead — критические секции конфига (см. app_config_lock.go).
 	// Мутирующие ручки оборачивают резолв+мутацию+снимок в WithConfigWrite; читатели
 	// изменяемого контента правил — в WithConfigRead. ClearGroups/AddGroup/

@@ -73,6 +73,22 @@ type App struct {
 
 	clientRoutingMu sync.Mutex
 
+	// routingMutationMu сериализует операции, меняющие ТОПОЛОГИЮ цепочек в
+	// ядре: подъём и снятие роутинга, перестройку групп подписок, включение и
+	// выключение отдельных групп. Без него переключение directPriority
+	// (teardown+bring-up всех групп) и перестройка подписок, идущая по своему
+	// таймеру, перемешиваются: часть цепочек создаётся в старом режиме, часть
+	// в новом, а группа подписки может подняться посреди общего teardown и
+	// остаться с правилами при снятом роутинге. Гонки данных здесь нет —
+	// race-детектор такое не покажет, ловится только явной сериализацией.
+	//
+	// Отдельный от lifecycleMu намеренно: lifecycleMu уже удерживается в Start,
+	// который вызывает перестройку подписок, а сама перестройка вызывается и
+	// из-под cfgMu (автообновление). Этот мьютекс с обоими совместим при одном
+	// правиле — ПОД НИМ НЕЛЬЗЯ БРАТЬ cfgMu, иначе появится обратный порядок к
+	// «cfgMu -> routingMutationMu» из автообновления и вернётся дедлок.
+	routingMutationMu sync.Mutex
+
 	// lifecycleMu сериализует переходы жизненного цикла роутинга: поднятие,
 	// снятие и смену режима коммиттера. SetEnabled вызывается прямо из
 	// HTTP-обработчика, поэтому двойной клик в UI без этого лока гоняется за
@@ -316,11 +332,15 @@ func (a *App) AddGroup(groupModel *models.Group) error {
 
 	// если routing активен – включаем группу и синхронизируем ipset
 	if a.routingActive.Load() {
-		if err = grp.Enable(); err != nil {
-			return fmt.Errorf("failed to enable group: %w", err)
-		}
-		if err = grp.Sync(); err != nil {
-			return fmt.Errorf("failed to sync group: %w", err)
+		// Включение группы вставляет её цепочки в PREROUTING — та же топология,
+		// что трогают teardown/bring-up, поэтому идём в общую очередь.
+		if err = a.WithRoutingMutation(func() error {
+			if err := grp.Enable(); err != nil {
+				return fmt.Errorf("failed to enable group: %w", err)
+			}
+			return grp.Sync()
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -685,15 +705,18 @@ func (a *App) applyDirectPriority(mode string, ensureRouting bool) error {
 	if !ensureRouting {
 		return nil
 	}
-	if a.routingActive.Load() {
-		if err := a.bringDown(); err != nil {
-			return fmt.Errorf("teardown: %w", err)
+	// cfgMu к этому моменту отпущен — под routingMutationMu его брать нельзя.
+	return a.WithRoutingMutation(func() error {
+		if a.routingActive.Load() {
+			if err := a.bringDown(); err != nil {
+				return fmt.Errorf("teardown: %w", err)
+			}
 		}
-	}
-	if err := a.bringUp(); err != nil {
-		return fmt.Errorf("bring-up: %w", err)
-	}
-	return nil
+		if err := a.bringUp(); err != nil {
+			return fmt.Errorf("bring-up: %w", err)
+		}
+		return nil
+	})
 }
 
 // routingIntended — должен ли роутинг работать по воле пользователя. Именно
@@ -703,6 +726,14 @@ func (a *App) routingIntended() bool {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
 	return a.config.Enabled
+}
+
+// WithRoutingMutation выполняет fn под сериализацией операций с цепочками.
+// Правило внутри fn: не брать cfgMu (см. комментарий к routingMutationMu).
+func (a *App) WithRoutingMutation(fn func() error) error {
+	a.routingMutationMu.Lock()
+	defer a.routingMutationMu.Unlock()
+	return fn()
 }
 
 func (a *App) bringUp() error {
@@ -814,7 +845,7 @@ func (a *App) SetEnabled(enabled bool) error {
 
 	var bringDownErr error
 	if enabled {
-		if err := a.bringUpRouting(); err != nil {
+		if err := a.WithRoutingMutation(a.bringUpRouting); err != nil {
 			return err
 		}
 		if a.committer != nil {
@@ -827,7 +858,7 @@ func (a *App) SetEnabled(enabled bool) error {
 			// начнётся. Иначе он восстановил бы то, что снимает teardown.
 			a.committer.setMode(committerPaused)
 		}
-		bringDownErr = a.bringDownRouting()
+		bringDownErr = a.WithRoutingMutation(a.bringDownRouting)
 	}
 
 	// Намерение пользователя фиксируется в конфиге безусловно, даже если

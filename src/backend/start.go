@@ -213,7 +213,7 @@ func (a *App) Start(ctx context.Context) (err error) {
 		}
 
 		if a.config.Enabled {
-			if err := a.bringUpRouting(); err != nil {
+			if err := a.WithRoutingMutation(a.bringUpRouting); err != nil {
 				return err
 			}
 			// Модель собрана — коммиттер может писать. Событие, защёлкнутое во
@@ -261,7 +261,7 @@ func (a *App) Start(ctx context.Context) (err error) {
 		a.lifecycleMu.Lock()
 		defer a.lifecycleMu.Unlock()
 		a.shuttingDown = true
-		_ = a.bringDownRouting()
+		_ = a.WithRoutingMutation(a.bringDownRouting)
 	}()
 
 	if a.config.DNSProxy.PersistCache {

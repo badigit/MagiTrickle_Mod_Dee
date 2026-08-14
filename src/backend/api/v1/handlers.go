@@ -545,8 +545,12 @@ func (h *Handler) PutGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		enabled := groupWrapper.Enabled()
+		// Снятие и повторное поднятие цепочек группы — операция с топологией
+		// ядра, та же, что делает переключение режима роутинга. Без общей
+		// очереди правка группы вклинивается в чужой teardown/bring-up, и часть
+		// цепочек остаётся от прежнего состояния.
 		if enabled {
-			if e := groupWrapper.Disable(); e != nil {
+			if e := h.app.WithRoutingMutation(groupWrapper.Disable); e != nil {
 				status, errMsg = http.StatusInternalServerError, fmt.Sprintf("failed to disable group: %v", e)
 				return
 			}
@@ -557,7 +561,7 @@ func (h *Handler) PutGroup(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if enabled {
-			if e := groupWrapper.Enable(); e != nil {
+			if e := h.app.WithRoutingMutation(groupWrapper.Enable); e != nil {
 				status, errMsg = http.StatusInternalServerError, fmt.Sprintf("failed to enable group: %v", e)
 				return
 			}

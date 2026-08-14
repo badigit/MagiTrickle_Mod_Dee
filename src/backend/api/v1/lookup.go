@@ -29,6 +29,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 	// Чтение под RLock: matchRule/итерация читают rule.Rule и *.Rules, которые
 	// API-писатели мутируют in-place (mt-gjg/mt-jfc). WriteJson — вне лока.
 	var results []types.LookupResult
+	var queries []parsedQuery
 	h.app.WithConfigRead(func() {
 		var sources []ruleSource
 		appGroups := h.app.Groups()
@@ -120,6 +121,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 		}
 
 		results = make([]types.LookupResult, len(req.Queries))
+		queries = make([]parsedQuery, len(req.Queries))
 		for qi, query := range req.Queries {
 			result := types.LookupResult{
 				Query:    query,
@@ -160,13 +162,30 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			result.Winner = h.lookupWinner(qLower, qIP, qNet, req.CheckIpset, result)
-
 			results[qi] = result
+			queries[qi] = parsedQuery{lower: qLower, ip: qIP, net: qNet}
 		}
 	})
 
+	// Победитель считается ВНЕ WithConfigRead намеренно. sync.RWMutex в Go не
+	// реентрантен: DirectPriority и SearchDomainVerdict берут cfgMu.RLock сами,
+	// и повторный захват изнутри уже удерживаемого RLock встаёт намертво, если
+	// между ними в очередь попал писатель (обновление подписок, правка группы,
+	// смена directPriority). Дедлок был бы фатальным: следом встают все
+	// читатели, включая searchDomain на датапасе, то есть DNS роутера.
+	for qi := range results {
+		results[qi].Winner = h.lookupWinner(queries[qi], req.CheckIpset, results[qi])
+	}
+
 	utils.WriteJson(w, http.StatusOK, types.LookupRes{Results: results})
+}
+
+// parsedQuery — разбор запроса, переживающий выход из-под конфиг-лока: winner
+// считается уже снаружи, а парсить строку второй раз незачем.
+type parsedQuery struct {
+	lower string
+	ip    net.IP
+	net   *net.IPNet
 }
 
 // lookupWinner отвечает на главный вопрос пользователя — «а куда это пойдёт
@@ -185,14 +204,14 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 // Победитель НЕ называется там, где для утверждения нет данных: у CIDR-запроса
 // единого исхода не существует (разные адреса диапазона могут уходить в разные
 // группы), а без check_ipset неизвестно содержимое сетов.
-func (h *Handler) lookupWinner(query string, qIP net.IP, qNet *net.IPNet, ipsetChecked bool, result types.LookupResult) *types.LookupWinner {
+func (h *Handler) lookupWinner(q parsedQuery, ipsetChecked bool, result types.LookupResult) *types.LookupWinner {
 	// Роутинг снят целиком — ни одной цепочки MT в ядре нет, поэтому любой
 	// найденный победитель относится к будущему, а не к текущему моменту.
 	routingPaused := !h.app.IsRoutingActive()
 
-	if qIP != nil {
+	if q.ip != nil {
 		// Диапазон: победителя у него нет — только список совпадений.
-		if qNet != nil {
+		if q.net != nil {
 			return nil
 		}
 		if !ipsetChecked {
@@ -222,7 +241,7 @@ func (h *Handler) lookupWinner(query string, qIP net.IP, qNet *net.IPNet, ipsetC
 		return nil
 	}
 
-	group, why, found := h.app.SearchDomainVerdict(query)
+	group, why, found := h.app.SearchDomainVerdict(q.lower)
 	if !found {
 		return nil
 	}

@@ -212,9 +212,13 @@
         <p class="hint">{t("Direct priority hint")}</p>
       </div>
       <div class="direct-priority-control">
+        <!-- bind обязателен: bits-ui меняет выбор внутри себя сразу по клику,
+             и без двусторонней связи возврат directPriority к прежнему значению
+             (отмена подтверждения, ошибка PUT) не доедет обратно в компонент —
+             селект покажет режим, который так и не применился. -->
         <Select
           options={directPriorityOptions}
-          selected={directPriority}
+          bind:selected={directPriority}
           onValueChange={onDirectPriorityChange}
           ariaLabel={t("Direct group priority")}
         />

@@ -1,9 +1,9 @@
 package magitrickle
 
 import (
-	"magitrickle/app"
 	"context"
 	"fmt"
+	"magitrickle/app"
 	"time"
 
 	"magitrickle/models"

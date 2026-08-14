@@ -12,6 +12,14 @@ import (
 // newDirectPriorityFixture — direct-группа поверх PREROUTING, где уже висит
 // цепочка другой (ранее поднятой) группы. Порядок jump-правил в PREROUTING и
 // есть предмет проверки: он решает, кто выигрывает overlap по IP.
+// newTestHelper — Helper с выставленным режимом арбитража: поле приватное и
+// атомарное, литералом структуры его больше не задать.
+func newTestHelper(ipt *iptables.IPTables, byOrder bool) *Helper {
+	nh := &Helper{IPTables4: ipt}
+	nh.SetDirectPriorityByOrder(byOrder)
+	return nh
+}
+
 func newDirectPriorityFixture(byOrder bool) (*IPSetToLink, *iptables.FakeIPTables, *iptables.IPTables) {
 	fake := iptables.NewFakeIPTables(iptables.ProtocolIPv4)
 	ipt := iptables.NewIPTables(fake)
@@ -26,7 +34,7 @@ func newDirectPriorityFixture(byOrder bool) (*IPSetToLink, *iptables.FakeIPTable
 		chainName: "MT_DIRECT",
 		ifaceName: Direct,
 		ipset:     &IPSet{ipsetName: "mt_direct"},
-		nh:        &Helper{IPTables4: ipt, DirectPriorityByOrder: byOrder},
+		nh:        newTestHelper(ipt, byOrder),
 	}
 	return r, fake, ipt
 }

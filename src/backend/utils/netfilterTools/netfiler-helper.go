@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"magitrickle/utils/iptables"
 )
@@ -21,7 +22,7 @@ type Helper struct {
 
 	StartIdx uint32
 
-	// DirectPriorityByOrder переключает арбитраж direct-групп (mt-n4b).
+	// directPriorityByOrder переключает арбитраж direct-групп (mt-n4b).
 	// false (дефолт) — direct абсолютен: его цепочка встаёт первой в
 	// PREROUTING и ACCEPT внутри неё перебивает TPROXY/MARK любой другой
 	// группы, где бы direct ни стоял в списке. true — direct участвует в
@@ -29,7 +30,12 @@ type Helper struct {
 	// выигрывает overlap, а широкая direct-группа внизу работает catch-all'ом
 	// (конфиги, сложившиеся до f326f4a). Содержимое цепочки в обоих режимах
 	// одинаково: терминирует ACCEPT, возврат к RETURN означал бы баг mt-my3.
-	DirectPriorityByOrder bool
+	//
+	// Атомарный, а не голый bool: режим переключается из HTTP-обработчика под
+	// lifecycleMu, а читается при создании direct-цепочки в Group.Enable,
+	// который вызывается и с путей, этого лока не берущих (group API,
+	// RebuildSubscriptionGroups) — то есть на голом поле это гонка данных.
+	directPriorityByOrder atomic.Bool
 
 	// preambleMu guards the reference count for the shared interface-mode
 	// mangle preamble. The preamble is a single chain shared by all
@@ -40,6 +46,19 @@ type Helper struct {
 
 	clientBypassMu    sync.Mutex
 	clientBypassReady bool
+}
+
+// SetDirectPriorityByOrder переключает режим арбитража direct-групп.
+// Влияет только на цепочки, создаваемые ПОСЛЕ вызова: позиция уже существующей
+// цепочки в PREROUTING задана в момент её создания, поэтому смена режима на
+// живой системе требует переподнятия правил.
+func (nh *Helper) SetDirectPriorityByOrder(byOrder bool) {
+	nh.directPriorityByOrder.Store(byOrder)
+}
+
+// DirectPriorityIsByOrder сообщает текущий режим арбитража direct-групп.
+func (nh *Helper) DirectPriorityIsByOrder() bool {
+	return nh.directPriorityByOrder.Load()
 }
 
 // acquireInterfacePreamble ensures the shared mangle PREROUTING preamble is

@@ -48,4 +48,8 @@ type IpsetHit struct {
 	GroupID   string `json:"group_id"`
 	GroupName string `json:"group_name"`
 	Source    string `json:"source"`
+	// Interface — режим группы (tproxy/direct/имя интерфейса). Нужен, чтобы по
+	// ответу было видно, почему победила именно эта группа при absolute-режиме
+	// арбитража, где direct стоит первым в цепочке.
+	Interface string `json:"interface,omitempty"`
 }

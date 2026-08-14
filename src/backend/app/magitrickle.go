@@ -46,6 +46,9 @@ type DNSCapturer interface {
 type Main interface {
 	Config() models.AppConfig
 	Groups() []Group
+	// RoutingGroups — набор, по которому реально строится роутинг: базовые
+	// группы плюс рантайм-группы подписок (у них свои ipset).
+	RoutingGroups() []Group
 	// WithConfigWrite/WithConfigRead — критические секции конфига (см. app_config_lock.go).
 	// Мутирующие ручки оборачивают резолв+мутацию+снимок в WithConfigWrite; читатели
 	// изменяемого контента правил — в WithConfigRead. ClearGroups/AddGroup/

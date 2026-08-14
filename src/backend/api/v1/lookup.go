@@ -61,13 +61,19 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 			groupID   string
 			groupName string
 			source    string
-			setName   string
-			network   net.IPNet
+			// iface нужен, чтобы отличить direct-группу: в absolute-режиме её
+			// цепочка стоит первой в PREROUTING и выигрывает overlap, где бы
+			// группа ни стояла в списке.
+			iface   string
+			setName string
+			network net.IPNet
 		}
 		var ipsetEntries []ipsetEntry
 
 		if req.CheckIpset {
-			for _, g := range appGroups {
+			// Именно RoutingGroups: у групп подписок собственные ipset, и без
+			// них победитель по IP не находится вовсе.
+			for _, g := range h.app.RoutingGroups() {
 				m := g.Model()
 				if !m.Enable {
 					continue
@@ -84,6 +90,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 							groupID:   gid,
 							groupName: m.Name,
 							source:    "group",
+							iface:     m.Interface,
 							network: net.IPNet{
 								IP:   net.IP(subnet.Address[:]),
 								Mask: net.CIDRMask(int(cidr), 32),
@@ -101,6 +108,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 							groupID:   gid,
 							groupName: m.Name,
 							source:    "group",
+							iface:     m.Interface,
 							network: net.IPNet{
 								IP:   net.IP(subnet.Address[:]),
 								Mask: net.CIDRMask(int(cidr), 128),
@@ -145,13 +153,14 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 								GroupID:   entry.groupID,
 								GroupName: entry.groupName,
 								Source:    entry.source,
+								Interface: entry.iface,
 							})
 						}
 					}
 				}
 			}
 
-			result.Winner = h.lookupWinner(qLower, qIP, result)
+			result.Winner = h.lookupWinner(qLower, qIP, qNet, req.CheckIpset, result)
 
 			results[qi] = result
 		}
@@ -168,19 +177,34 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 // собственный подсчёт разошёлся бы с роутингом ровно в спорных случаях, ради
 // которых winner и добавлен (mt-ztg, корень жалоб mt-4ho/mt-4pl/mt-1wg).
 //
-// Для IP победителя определяет ipset: первая по порядку группа, в чьём сете
-// адрес уже лежит, — это буквально то, что увидит пакет. Если сет пуст, но
-// адрес попадает в подсеть правила, победитель называется с Pending: правило
-// сработает, когда домен резолвится через MagiTrickle или пройдёт sync.
-func (h *Handler) lookupWinner(query string, qIP net.IP, result types.LookupResult) *types.LookupWinner {
+// Для IP победителя определяет ipset — это буквально то, что увидит пакет, —
+// но с поправкой на режим арбитража: в absolute direct-цепочка стоит первой в
+// PREROUTING, поэтому direct-группа выигрывает overlap независимо от своего
+// места в списке.
+//
+// Победитель НЕ называется там, где для утверждения нет данных: у CIDR-запроса
+// единого исхода не существует (разные адреса диапазона могут уходить в разные
+// группы), а без check_ipset неизвестно содержимое сетов.
+func (h *Handler) lookupWinner(query string, qIP net.IP, qNet *net.IPNet, ipsetChecked bool, result types.LookupResult) *types.LookupWinner {
+	// Роутинг снят целиком — ни одной цепочки MT в ядре нет, поэтому любой
+	// найденный победитель относится к будущему, а не к текущему моменту.
+	routingPaused := !h.app.IsRoutingActive()
+
 	if qIP != nil {
-		if len(result.IpsetHits) > 0 {
-			hit := result.IpsetHits[0]
+		// Диапазон: победителя у него нет — только список совпадений.
+		if qNet != nil {
+			return nil
+		}
+		if !ipsetChecked {
+			return nil
+		}
+		if hit := pickIpsetWinner(result.IpsetHits, h.app.DirectPriority()); hit != nil {
 			return &types.LookupWinner{
 				GroupID:   hit.GroupID,
 				GroupName: hit.GroupName,
 				Source:    hit.Source,
 				Why:       models.LookupWhyIpsetFirst,
+				Pending:   routingPaused,
 			}
 		}
 		for _, hit := range result.RuleHits {
@@ -208,7 +232,26 @@ func (h *Handler) lookupWinner(query string, qIP net.IP, result types.LookupResu
 		GroupName: m.Name,
 		Source:    winnerSource(m.ID.String(), result.RuleHits),
 		Why:       why,
+		Pending:   routingPaused,
 	}
+}
+
+// pickIpsetWinner выбирает группу так же, как выберет ядро: в absolute-режиме
+// direct-цепочка вставлена в PREROUTING первой и терминирует пакет ACCEPT'ом,
+// поэтому среди совпавших сетов побеждает первая direct-группа, а не первая по
+// списку. В byOrder все цепочки стоят в порядке групп — выигрывает верхняя.
+func pickIpsetWinner(hits []types.IpsetHit, directPriority string) *types.IpsetHit {
+	if len(hits) == 0 {
+		return nil
+	}
+	if directPriority == models.DirectPriorityAbsolute {
+		for i := range hits {
+			if hits[i].Interface == models.InterfaceDirect {
+				return &hits[i]
+			}
+		}
+	}
+	return &hits[0]
 }
 
 // winnerSource достаёт источник (группа или подписка) из уже собранных

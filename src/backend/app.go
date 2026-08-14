@@ -631,18 +631,54 @@ func (a *App) DirectPriority() string {
 	return a.config.Netfilter.DirectPriority
 }
 
-// SetDirectPriority переключает режим арбитража direct-групп и ПЕРЕПОДНИМАЕТ
-// роутинг, потому что позиция direct-цепочки в PREROUTING (первая против «по
-// порядку групп») задаётся в момент её создания — правки на месте для неё нет.
+// directPriorityApplied сообщает, соответствует ли режим, с которым реально
+// созданы цепочки, тому, что записан в конфиге. Расходятся они только после
+// неудачного переключения — и тогда повторный запрос обязан не отвечать «уже
+// сделано», а честно повторить попытку.
+func (a *App) directPriorityApplied() bool {
+	if a.nfHelper == nil {
+		return true
+	}
+	a.cfgMu.RLock()
+	want := a.config.Netfilter.DirectPriority == models.DirectPriorityByOrder
+	a.cfgMu.RUnlock()
+	return a.nfHelper.DirectPriorityIsByOrder() == want
+}
+
+// applyDirectPriority выставляет режим в конфиге и хелпере и, если роутинг
+// поднят, пересоздаёт цепочки — позиция direct-цепочки в PREROUTING задаётся
+// при её создании, править на месте нечего.
+func (a *App) applyDirectPriority(mode string) error {
+	a.cfgMu.Lock()
+	a.config.Netfilter.DirectPriority = mode
+	a.cfgMu.Unlock()
+	if a.nfHelper != nil {
+		a.nfHelper.SetDirectPriorityByOrder(mode == models.DirectPriorityByOrder)
+	}
+	if !a.routingActive.Load() {
+		return nil
+	}
+	if err := a.bringDownRouting(); err != nil {
+		return fmt.Errorf("teardown: %w", err)
+	}
+	if err := a.bringUpRouting(); err != nil {
+		return fmt.Errorf("bring-up: %w", err)
+	}
+	return nil
+}
+
+// SetDirectPriority переключает режим арбитража direct-групп (mt-n4b).
 //
-// Цена честного применения — то же короткое окно без правил, что при паузе и
-// возобновлении; молча отложить смену до перезапуска нельзя: пользователь
-// увидел бы переключенный тумблер при старом поведении роутинга.
+// Операция транзакционная: применение к живому роутингу требует пересоздания
+// цепочек, а значит может упасть на полпути. Любая ошибка возвращает систему к
+// прежнему режиму — включая повторный подъём роутинга, который bringUpRouting
+// снимает своим откатом. Худший исход (не поднялись даже со старым режимом)
+// возвращается пользователю ошибкой, а не тихо оставляет роутер без правил.
 //
 // Порядок операций повторяет SetEnabled: коммиттер на паузу (иначе он
-// восстановит то, что снимает teardown), снятие, подъём, возобновление. При
-// неудачном подъёме ошибка возвращается наверх, а не проглатывается — иначе
-// пользователь получил бы 200 OK на снятом роутинге.
+// восстановит то, что снимает teardown), затем переподнятие. Возобновляется
+// коммиттер только если роутинг в итоге поднят: ready при снятом роутинге
+// заставил бы его чинить то, чего быть не должно.
 func (a *App) SetDirectPriority(mode string) error {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
@@ -651,44 +687,45 @@ func (a *App) SetDirectPriority(mode string) error {
 		return fmt.Errorf("unknown direct priority mode %q", mode)
 	}
 
-	a.cfgMu.RLock()
-	current := a.config.Netfilter.DirectPriority
-	a.cfgMu.RUnlock()
-	if current == mode {
+	previous := a.DirectPriority()
+	// Ранний выход только когда состояние согласовано. После неудачной попытки
+	// конфиг и цепочки расходятся, и «тот же режим» означает «повтори», а не
+	// «уже применено» — иначе повторный PUT ответил бы 200 на снятом роутинге.
+	if previous == mode && a.directPriorityApplied() {
 		return nil
 	}
 
-	a.cfgMu.Lock()
-	a.config.Netfilter.DirectPriority = mode
-	a.cfgMu.Unlock()
-	if a.nfHelper != nil {
-		a.nfHelper.DirectPriorityByOrder = mode == models.DirectPriorityByOrder
+	if a.committer != nil {
+		a.committer.setMode(committerPaused)
 	}
-
-	// Роутинг не поднят — менять в ядре нечего, новый режим применится при
-	// ближайшем подъёме (позиция читается при создании цепочки).
-	if a.routingActive.Load() {
-		if a.committer != nil {
-			a.committer.setMode(committerPaused)
-		}
-		if err := a.bringDownRouting(); err != nil {
-			if a.committer != nil {
-				a.committer.setMode(committerReady)
-			}
-			return fmt.Errorf("failed to tear down routing for direct priority switch: %w", err)
-		}
-		if err := a.bringUpRouting(); err != nil {
-			return fmt.Errorf("failed to bring routing back up after direct priority switch: %w", err)
-		}
-		if a.committer != nil {
+	defer func() {
+		if a.committer != nil && a.routingActive.Load() {
 			a.committer.setMode(committerReady)
 		}
+	}()
+
+	if err := a.applyDirectPriority(mode); err != nil {
+		log.Error().Err(err).Str("mode", mode).Msg("direct priority switch failed, rolling back")
+		if rollbackErr := a.applyDirectPriority(previous); rollbackErr != nil {
+			return errors.Join(
+				fmt.Errorf("failed to switch direct priority to %q: %w", mode, err),
+				fmt.Errorf("rollback to %q also failed, routing is down: %w", previous, rollbackErr),
+			)
+		}
+		return fmt.Errorf("failed to switch direct priority to %q (rolled back): %w", mode, err)
 	}
 
 	if err := a.SaveConfig(); err != nil {
-		log.Error().Err(err).Msg("failed to persist netfilter.directPriority")
+		// Ядро уже живёт по новому режиму, а диск — по старому. Оставить так
+		// значит соврать: после перезапуска вернётся прежнее поведение, хотя
+		// API и UI показывают новое. Откатываем ядро к тому, что на диске.
+		log.Error().Err(err).Msg("failed to persist netfilter.directPriority, rolling back")
+		if rollbackErr := a.applyDirectPriority(previous); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback to %q also failed, routing is down: %w", previous, rollbackErr))
+		}
 		return err
 	}
+
 	log.Info().Str("mode", mode).Msg("direct priority switched")
 	return nil
 }

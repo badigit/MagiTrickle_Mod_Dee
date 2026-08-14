@@ -118,7 +118,8 @@ func setupGroups(t *testing.T, targetIP string, byOrder bool) {
 	ipt.RegisterChainPatch("nat", "POSTROUTING")
 	ipt.RegisterChainPatch("filter", "FORWARD")
 
-	nh := &Helper{IPTables4: ipt, DirectPriorityByOrder: byOrder}
+	nh := &Helper{IPTables4: ipt}
+	nh.SetDirectPriorityByOrder(byOrder)
 
 	// Сеты client-bypass создаём штатным кодом: guard на них добавляется в
 	// КАЖДУЮ цепочку, и без реально существующих сетов iptables-restore

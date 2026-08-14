@@ -33,16 +33,35 @@ func (g *fakeLookupGroup) ListIPv6Subnets() (map[netfilterTools.IPv6Subnet]netfi
 type fakeLookupApp struct {
 	app.Main
 	groups  []app.Group
+	routing []app.Group // рантайм-набор (база + группы подписок); пусто — берём groups
 	subs    []*models.Subscription
-	verdict map[string]struct {
+	// routingActive/directMode по умолчанию дают «роутинг поднят, direct
+	// абсолютен» — состояние типового роутера, чтобы старые тесты не
+	// перечисляли его каждый раз.
+	routingActive bool
+	directMode    string
+	verdict       map[string]struct {
 		group app.Group
 		why   string
 	}
 }
 
-func (f *fakeLookupApp) WithConfigRead(fn func())                    { fn() }
-func (f *fakeLookupApp) Groups() []app.Group                         { return f.groups }
-func (f *fakeLookupApp) Subscriptions() []*models.Subscription       { return f.subs }
+func (f *fakeLookupApp) WithConfigRead(fn func())              { fn() }
+func (f *fakeLookupApp) Groups() []app.Group                   { return f.groups }
+func (f *fakeLookupApp) Subscriptions() []*models.Subscription { return f.subs }
+func (f *fakeLookupApp) RoutingGroups() []app.Group {
+	if len(f.routing) > 0 {
+		return f.routing
+	}
+	return f.groups
+}
+func (f *fakeLookupApp) IsRoutingActive() bool { return f.routingActive }
+func (f *fakeLookupApp) DirectPriority() string {
+	if f.directMode == "" {
+		return models.DirectPriorityAbsolute
+	}
+	return f.directMode
+}
 func (f *fakeLookupApp) SearchDomainVerdict(domain string) (app.Group, string, bool) {
 	v, ok := f.verdict[domain]
 	if !ok {
@@ -82,7 +101,8 @@ func TestLookupWinnerDomain(t *testing.T) {
 	loser := lookupGroup("CDN", &models.Rule{Type: models.RuleTypeWildcard, Rule: "*.ai", Enable: true})
 
 	a := &fakeLookupApp{
-		groups: []app.Group{winner, loser},
+		routingActive: true,
+		groups:        []app.Group{winner, loser},
 		verdict: map[string]struct {
 			group app.Group
 			why   string
@@ -113,7 +133,7 @@ func TestLookupWinnerDomain(t *testing.T) {
 
 // Домен без совпадений: winner отсутствует, а не выдумывается.
 func TestLookupNoWinner(t *testing.T) {
-	a := &fakeLookupApp{groups: []app.Group{lookupGroup("AI")}}
+	a := &fakeLookupApp{groups: []app.Group{lookupGroup("AI")}, routingActive: true}
 
 	out := doLookup(t, a, types.LookupReq{Queries: []string{"example.org"}})
 	if out.Results[0].Winner != nil {
@@ -133,7 +153,7 @@ func TestLookupWinnerIpsetFirst(t *testing.T) {
 		{Address: [4]byte{160, 79, 104, 10}, CIDR: 32}: nil,
 	}
 
-	a := &fakeLookupApp{groups: []app.Group{first, second}}
+	a := &fakeLookupApp{groups: []app.Group{first, second}, routingActive: true}
 
 	out := doLookup(t, a, types.LookupReq{Queries: []string{"160.79.104.10"}, CheckIpset: true})
 	got := out.Results[0]
@@ -157,7 +177,7 @@ func TestLookupWinnerIpsetFirst(t *testing.T) {
 func TestLookupWinnerPending(t *testing.T) {
 	g := lookupGroup("AI", &models.Rule{Type: models.RuleTypeSubnet, Rule: "160.79.104.0/24", Enable: true})
 
-	a := &fakeLookupApp{groups: []app.Group{g}}
+	a := &fakeLookupApp{groups: []app.Group{g}, routingActive: true}
 
 	out := doLookup(t, a, types.LookupReq{Queries: []string{"160.79.104.10"}, CheckIpset: true})
 	got := out.Results[0]

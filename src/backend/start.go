@@ -94,7 +94,7 @@ func (a *App) Start(ctx context.Context) (err error) {
 	// Режим арбитража direct читается на старте: он влияет только на позицию
 	// цепочки при её создании, поэтому смена режима на лету потребовала бы
 	// переподнятия роутинга (см. mt-n4b, UI-часть).
-	nfh.DirectPriorityByOrder = a.config.Netfilter.DirectPriority == models.DirectPriorityByOrder
+	nfh.SetDirectPriorityByOrder(a.config.Netfilter.DirectPriority == models.DirectPriorityByOrder)
 	a.nfHelper = nfh
 
 	for _, ipt := range []*iptables.IPTables{a.nfHelper.IPTables4, a.nfHelper.IPTables6} {

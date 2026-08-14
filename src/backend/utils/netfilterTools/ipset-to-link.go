@@ -46,7 +46,7 @@ type IPSetToLink struct {
 // (routingGroups отдаёт базовые группы в порядке конфига). Правила ВНУТРИ
 // цепочки от режима не зависят.
 func (r *IPSetToLink) linkDirectChain(ipt *iptables.IPTables, table string) error {
-	if r.nh.DirectPriorityByOrder {
+	if r.nh.DirectPriorityIsByOrder() {
 		return ipt.Append(table, "PREROUTING", "!", "-i", "lo", "-j", r.chainName)
 	}
 	return ipt.Insert(table, "PREROUTING", 1, "!", "-i", "lo", "-j", r.chainName)

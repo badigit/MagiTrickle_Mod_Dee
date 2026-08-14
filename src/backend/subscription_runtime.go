@@ -1,6 +1,7 @@
 package magitrickle
 
 import (
+	"magitrickle/app"
 	"context"
 	"fmt"
 	"time"
@@ -21,6 +22,19 @@ func (a *App) routingGroups() []*Group {
 	result = append(result, base...)
 	result = append(result, subscriptionGroups...)
 	return result
+}
+
+// RoutingGroups отдаёт тот же набор, по которому реально строится роутинг:
+// базовые группы плюс рантайм-группы подписок. API обязано смотреть сюда, а не
+// на Groups(): у подписок отдельные ipset, и без них ответ о победителе по IP
+// врёт для всякого адреса, попавшего в динамический сет подписки.
+func (a *App) RoutingGroups() []app.Group {
+	rg := a.routingGroups()
+	out := make([]app.Group, len(rg))
+	for i, g := range rg {
+		out[i] = g
+	}
+	return out
 }
 
 func (a *App) RebuildSubscriptionGroups() error {

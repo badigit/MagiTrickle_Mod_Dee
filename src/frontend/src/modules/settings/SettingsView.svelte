@@ -85,7 +85,7 @@
     if (mode !== "absolute" && mode !== "byOrder") return;
     const previous = directPriority;
     if (mode === previous) return;
-    if (!confirm(t("Switching re-applies routing rules. Continue?"))) {
+    if (!confirm(t("Switching re-applies routing rules and takes about 10 seconds. Continue?"))) {
       directPriority = previous;
       return;
     }

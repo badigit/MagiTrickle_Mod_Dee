@@ -7,6 +7,10 @@ type LookupReq struct {
 
 type LookupRes struct {
 	Results []LookupResult `json:"results"`
+	// RoutingActive — подняты ли сейчас цепочки MagiTrickle. Без этого признака
+	// пустой winner при снятом роутинге читается как «правил на домен нет»,
+	// хотя правило есть и заработает после включения.
+	RoutingActive bool `json:"routing_active"`
 }
 
 type LookupResult struct {

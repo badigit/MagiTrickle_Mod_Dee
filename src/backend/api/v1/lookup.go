@@ -73,13 +73,21 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 
 		if req.CheckIpset {
 			// Именно RoutingGroups: у групп подписок собственные ipset, и без
-			// них победитель по IP не находится вовсе.
-			for _, g := range h.app.RoutingGroups() {
+			// них победитель по IP не находится вовсе. Набор строится как
+			// «сначала базовые группы, затем рантайм-группы подписок», и
+			// принадлежность определяется позицией: ID уникальны лишь внутри
+			// каждого из этих двух множеств, поэтому по ID её не выяснить.
+			baseCount := len(appGroups)
+			for gi, g := range h.app.RoutingGroups() {
 				m := g.Model()
 				if !m.Enable {
 					continue
 				}
 				gid := m.ID.String()
+				entrySource := "group"
+				if gi >= baseCount {
+					entrySource = "subscription"
+				}
 
 				if ipv4, err := g.ListIPv4Subnets(); err == nil {
 					for subnet := range ipv4 {
@@ -90,7 +98,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 						ipsetEntries = append(ipsetEntries, ipsetEntry{
 							groupID:   gid,
 							groupName: m.Name,
-							source:    "group",
+							source:    entrySource,
 							iface:     m.Interface,
 							network: net.IPNet{
 								IP:   net.IP(subnet.Address[:]),
@@ -108,7 +116,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 						ipsetEntries = append(ipsetEntries, ipsetEntry{
 							groupID:   gid,
 							groupName: m.Name,
-							source:    "group",
+							source:    entrySource,
 							iface:     m.Interface,
 							network: net.IPNet{
 								IP:   net.IP(subnet.Address[:]),
@@ -146,11 +154,15 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 			// Check ipset
 			if req.CheckIpset && qIP != nil {
 				result.IpsetHits = []types.IpsetHit{}
+				// Ключ дедупликации — пара источник+ID: у базовой группы и
+				// подписки ID могут совпасть, и по одному ID подписка была бы
+				// подавлена, а вместе с ней и её роль в арбитраже.
 				seen := make(map[string]bool)
 				for _, entry := range ipsetEntries {
 					if entry.network.Contains(qIP) {
-						if !seen[entry.groupID] {
-							seen[entry.groupID] = true
+						key := entry.source + ":" + entry.groupID
+						if !seen[key] {
+							seen[key] = true
 							result.IpsetHits = append(result.IpsetHits, types.IpsetHit{
 								GroupID:   entry.groupID,
 								GroupName: entry.groupName,
@@ -177,7 +189,7 @@ func (h *Handler) Lookup(w http.ResponseWriter, r *http.Request) {
 		results[qi].Winner = h.lookupWinner(queries[qi], req.CheckIpset, results[qi])
 	}
 
-	utils.WriteJson(w, http.StatusOK, types.LookupRes{Results: results})
+	utils.WriteJson(w, http.StatusOK, types.LookupRes{Results: results, RoutingActive: h.app.IsRoutingActive()})
 }
 
 // parsedQuery — разбор запроса, переживающий выход из-под конфиг-лока: winner
@@ -241,6 +253,9 @@ func (h *Handler) lookupWinner(q parsedQuery, ipsetChecked bool, result types.Lo
 		return nil
 	}
 
+	// При снятом роутинге группы выключены, trie пуст и вердикта не будет —
+	// это честный ответ «сейчас победителя нет», а не потеря информации:
+	// признак RoutingActive в ответе объясняет причину.
 	group, why, found := h.app.SearchDomainVerdict(q.lower)
 	if !found {
 		return nil
@@ -264,7 +279,11 @@ func pickIpsetWinner(hits []types.IpsetHit, directPriority string) *types.IpsetH
 		return nil
 	}
 	if directPriority == models.DirectPriorityAbsolute {
-		for i := range hits {
+		// Идём с конца: каждая direct-группа вставляет свою цепочку в позицию 1
+		// (ipset-to-link.go), поэтому в PREROUTING они лежат в обратном порядке
+		// включения — первой стоит цепочка ПОСЛЕДНЕЙ direct-группы, она и
+		// перехватит пакет.
+		for i := len(hits) - 1; i >= 0; i-- {
 			if hits[i].Interface == models.InterfaceDirect {
 				return &hits[i]
 			}

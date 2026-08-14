@@ -1,6 +1,8 @@
 package v1
 
 import (
+	"encoding/binary"
+	"hash/fnv"
 	"testing"
 
 	"magitrickle/api/v1/types"
@@ -19,8 +21,12 @@ func ipsetOf(addr [4]byte) map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTim
 // ID обязателен и обязан быть уникальным: сбор ipset-хитов дедуплицирует
 // группы по нему, и одинаковые (нулевые) ID схлопнули бы разные группы в одну.
 func groupWithIface(name, iface string, ipv4 map[netfilterTools.IPv4Subnet]netfilterTools.IPSetTimeout, rules ...*models.Rule) *fakeLookupGroup {
+	// ID из хэша имени, а не из первых байт: "direct-one" и "direct-two"
+	// совпали бы в первых четырёх символах и слились при дедупликации.
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
 	var id intID.ID
-	copy(id[:], name)
+	binary.BigEndian.PutUint32(id[:], h.Sum32())
 	return &fakeLookupGroup{
 		model: &models.Group{ID: id, Name: name, Enable: true, Interface: iface, Rules: rules},
 		ipv4:  ipv4,
@@ -143,5 +149,107 @@ func TestLookupNoWinnerForCIDRQuery(t *testing.T) {
 	}
 	if len(got.RuleHits) == 0 {
 		t.Error("rule_hits пропали: список совпадений для диапазона по-прежнему нужен")
+	}
+}
+
+// M3 (вторая половина): direct-цепочки вставляются каждая в позицию 1, то есть
+// ложатся в PREROUTING в обратном порядке включения. При overlap выигрывает
+// ПОСЛЕДНЯЯ direct-группа списка, а не первая.
+func TestLookupWinnerLastDirectWinsAmongSeveral(t *testing.T) {
+	ip := [4]byte{10, 20, 30, 42}
+	first := groupWithIface("direct-one", models.InterfaceDirect, ipsetOf(ip))
+	second := groupWithIface("direct-two", models.InterfaceDirect, ipsetOf(ip))
+
+	a := &fakeLookupApp{
+		groups:        []app.Group{first, second},
+		routingActive: true,
+		directMode:    models.DirectPriorityAbsolute,
+	}
+
+	out := doLookup(t, a, types.LookupReq{Queries: []string{"10.20.30.42"}, CheckIpset: true})
+	w := out.Results[0].Winner
+	if w == nil {
+		t.Fatal("winner отсутствует")
+	}
+	if w.GroupName != "direct-two" {
+		t.Errorf("winner = %q, want direct-two (её цепочка вставлена последней, значит стоит первой)", w.GroupName)
+	}
+}
+
+// M5 (домен): при снятом роутинге группы выключены и trie пуст, поэтому
+// победителя по домену не существует. Ответ обязан сообщать, что роутинг снят,
+// иначе пустой winner читается как «правил нет».
+func TestLookupReportsRoutingInactive(t *testing.T) {
+	g := groupWithIface("AI", models.InterfaceTProxy, nil,
+		&models.Rule{Type: models.RuleTypeDomain, Rule: "claude.ai", Enable: true})
+
+	a := &fakeLookupApp{groups: []app.Group{g}, routingActive: false}
+
+	out := doLookup(t, a, types.LookupReq{Queries: []string{"claude.ai"}})
+	if out.RoutingActive {
+		t.Error("routing_active = true, но роутинг снят")
+	}
+	if out.Results[0].Winner != nil {
+		t.Error("winner назван при снятом роутинге: ни одной цепочки MT сейчас нет")
+	}
+}
+
+func TestLookupReportsRoutingActive(t *testing.T) {
+	g := groupWithIface("AI", models.InterfaceTProxy, nil)
+	a := &fakeLookupApp{groups: []app.Group{g}, routingActive: true}
+
+	out := doLookup(t, a, types.LookupReq{Queries: []string{"example.org"}})
+	if !out.RoutingActive {
+		t.Error("routing_active = false при поднятом роутинге")
+	}
+}
+
+// #7: рантайм-группа подписки обязана помечаться source=subscription, иначе
+// пользователь ищет правило не там, где оно лежит.
+func TestLookupIpsetWinnerFromSubscriptionHasRightSource(t *testing.T) {
+	ip := [4]byte{10, 20, 30, 43}
+	sub := groupWithIface("subs", models.InterfaceTProxy, ipsetOf(ip))
+
+	a := &fakeLookupApp{
+		groups:        []app.Group{},
+		routing:       []app.Group{sub},
+		subs:          []*models.Subscription{{ID: sub.model.ID, Name: "subs", Enable: true}},
+		routingActive: true,
+	}
+
+	out := doLookup(t, a, types.LookupReq{Queries: []string{"10.20.30.43"}, CheckIpset: true})
+	w := out.Results[0].Winner
+	if w == nil {
+		t.Fatal("winner отсутствует")
+	}
+	if w.Source != "subscription" {
+		t.Errorf("source = %q, want subscription", w.Source)
+	}
+}
+
+// #7 (вторая половина): ID уникальны лишь внутри базовых групп и внутри
+// подписок. Одинаковый ID у базовой группы и подписки не должен приводить к
+// тому, что одна подавляет другую при дедупликации ipset-хитов.
+func TestLookupIpsetHitsNotDedupedAcrossSources(t *testing.T) {
+	ip := [4]byte{10, 20, 30, 44}
+	base := groupWithIface("base", models.InterfaceTProxy, ipsetOf(ip))
+	sub := groupWithIface("base", models.InterfaceDirect, ipsetOf(ip)) // тот же ID: имя одинаковое
+	sub.model.Name = "subs"
+
+	a := &fakeLookupApp{
+		groups:        []app.Group{base},
+		routing:       []app.Group{base, sub},
+		subs:          []*models.Subscription{{ID: sub.model.ID, Name: "subs", Enable: true}},
+		routingActive: true,
+		directMode:    models.DirectPriorityAbsolute,
+	}
+
+	out := doLookup(t, a, types.LookupReq{Queries: []string{"10.20.30.44"}, CheckIpset: true})
+	got := out.Results[0]
+	if len(got.IpsetHits) != 2 {
+		t.Fatalf("ipset_hits = %d, want 2: базовая группа и подписка с одинаковым ID — разные записи", len(got.IpsetHits))
+	}
+	if got.Winner == nil || got.Winner.GroupName != "subs" {
+		t.Errorf("winner = %#v, want subs: direct выигрывает в absolute", got.Winner)
 	}
 }

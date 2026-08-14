@@ -624,6 +624,75 @@ func (a *App) tearDownRouting() error {
 	return errors.Join(errs...)
 }
 
+// DirectPriority возвращает текущий режим арбитража direct-групп (mt-n4b).
+func (a *App) DirectPriority() string {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
+	return a.config.Netfilter.DirectPriority
+}
+
+// SetDirectPriority переключает режим арбитража direct-групп и ПЕРЕПОДНИМАЕТ
+// роутинг, потому что позиция direct-цепочки в PREROUTING (первая против «по
+// порядку групп») задаётся в момент её создания — правки на месте для неё нет.
+//
+// Цена честного применения — то же короткое окно без правил, что при паузе и
+// возобновлении; молча отложить смену до перезапуска нельзя: пользователь
+// увидел бы переключенный тумблер при старом поведении роутинга.
+//
+// Порядок операций повторяет SetEnabled: коммиттер на паузу (иначе он
+// восстановит то, что снимает teardown), снятие, подъём, возобновление. При
+// неудачном подъёме ошибка возвращается наверх, а не проглатывается — иначе
+// пользователь получил бы 200 OK на снятом роутинге.
+func (a *App) SetDirectPriority(mode string) error {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+
+	if mode != models.DirectPriorityAbsolute && mode != models.DirectPriorityByOrder {
+		return fmt.Errorf("unknown direct priority mode %q", mode)
+	}
+
+	a.cfgMu.RLock()
+	current := a.config.Netfilter.DirectPriority
+	a.cfgMu.RUnlock()
+	if current == mode {
+		return nil
+	}
+
+	a.cfgMu.Lock()
+	a.config.Netfilter.DirectPriority = mode
+	a.cfgMu.Unlock()
+	if a.nfHelper != nil {
+		a.nfHelper.DirectPriorityByOrder = mode == models.DirectPriorityByOrder
+	}
+
+	// Роутинг не поднят — менять в ядре нечего, новый режим применится при
+	// ближайшем подъёме (позиция читается при создании цепочки).
+	if a.routingActive.Load() {
+		if a.committer != nil {
+			a.committer.setMode(committerPaused)
+		}
+		if err := a.bringDownRouting(); err != nil {
+			if a.committer != nil {
+				a.committer.setMode(committerReady)
+			}
+			return fmt.Errorf("failed to tear down routing for direct priority switch: %w", err)
+		}
+		if err := a.bringUpRouting(); err != nil {
+			return fmt.Errorf("failed to bring routing back up after direct priority switch: %w", err)
+		}
+		if a.committer != nil {
+			a.committer.setMode(committerReady)
+		}
+	}
+
+	if err := a.SaveConfig(); err != nil {
+		log.Error().Err(err).Msg("failed to persist netfilter.directPriority")
+		return err
+	}
+	log.Info().Str("mode", mode).Msg("direct priority switched")
+	return nil
+}
+
 // SetEnabled toggles routing on/off and persists the choice to config.
 // When enabled=false, traffic flows as if MagiTrickle were not running.
 func (a *App) SetEnabled(enabled bool) error {

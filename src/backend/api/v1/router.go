@@ -83,6 +83,8 @@ func NewRouter(a app.Main) chi.Router {
 	})
 	r.Route("/system", func(r chi.Router) {
 		r.Get("/client-routing", h.GetClientRouting)
+		r.Get("/direct-priority", h.GetDirectPriority)
+		r.Put("/direct-priority", h.PutDirectPriority)
 		r.Put("/client-routing", h.PutClientRouting)
 		r.Route("/interfaces", func(r chi.Router) {
 			r.Get("/", h.ListInterfaces)

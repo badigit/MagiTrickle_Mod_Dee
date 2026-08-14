@@ -58,6 +58,11 @@ type Main interface {
 	// обязано спрашивать исход здесь, а не пересчитывать его по своим
 	// источникам, иначе объяснение разойдётся с фактическим поведением.
 	SearchDomainVerdict(domain string) (Group, string, bool)
+	// DirectPriority/SetDirectPriority — режим арбитража direct-групп (mt-n4b).
+	// Смена режима переподнимает правила: позиция цепочки в PREROUTING задаётся
+	// при её создании.
+	DirectPriority() string
+	SetDirectPriority(mode string) error
 	ClearGroups()
 	AddGroup(groupModel *models.Group) error
 	RemoveGroupByIndex(idx int)

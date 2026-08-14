@@ -66,6 +66,33 @@ func (h *Handler) NetfilterDHook(w http.ResponseWriter, r *http.Request) {
 	h.app.RequestNetfilterCommit()
 }
 
+// GetDirectPriority returns the current direct-group arbitration mode.
+func (h *Handler) GetDirectPriority(w http.ResponseWriter, _ *http.Request) {
+	utils.WriteJson(w, http.StatusOK, types.DirectPriority{Mode: h.app.DirectPriority()})
+}
+
+// PutDirectPriority switches the mode and re-applies the routing rules.
+//
+// Неизвестный режим отвергается, а не приводится к дефолту: молчаливая
+// нормализация выглядела бы для пользователя как успешное переключение, после
+// которого роутинг ведёт себя по-старому.
+func (h *Handler) PutDirectPriority(w http.ResponseWriter, r *http.Request) {
+	req, err := utils.ReadJson[types.DirectPriority](r)
+	if err != nil {
+		utils.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Mode != models.DirectPriorityAbsolute && req.Mode != models.DirectPriorityByOrder {
+		utils.WriteError(w, http.StatusBadRequest, fmt.Sprintf("unknown direct priority mode %q", req.Mode))
+		return
+	}
+	if err := h.app.SetDirectPriority(req.Mode); err != nil {
+		utils.WriteError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	utils.WriteJson(w, http.StatusOK, types.DirectPriority{Mode: h.app.DirectPriority()})
+}
+
 // GetClientRouting returns the source networks excluded from MagiTrickle.
 func (h *Handler) GetClientRouting(w http.ResponseWriter, _ *http.Request) {
 	utils.WriteJson(w, http.StatusOK, h.app.ClientRouting())

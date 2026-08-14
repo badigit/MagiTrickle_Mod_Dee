@@ -2,6 +2,7 @@
   import { onDestroy, onMount } from "svelte";
 
   import Button from "../../components/ui/Button.svelte";
+  import Select from "../../components/ui/Select.svelte";
   import Switch from "../../components/ui/Switch.svelte";
   import { locale, t } from "../../data/locale.svelte";
   import { routing } from "../../data/routing.svelte";
@@ -16,6 +17,7 @@
 
   type SystemInfo = { started_at: string; uptime_seconds: number };
   type ClientRouting = { mode: "exclude"; source_networks: string[] };
+  type DirectPriority = { mode: "absolute" | "byOrder" };
 
   let busy = $state(false);
   let startedAt = $state<Date | null>(null);
@@ -24,6 +26,9 @@
   let clientRoutingText = $state("");
   let clientRoutingLoaded = $state(false);
   let clientRoutingSaving = $state(false);
+  let directPriority = $state<"absolute" | "byOrder">("absolute");
+  let directPriorityLoaded = $state(false);
+  let directPrioritySaving = $state(false);
 
   let uptime = $derived.by(() => {
     if (!startedAt) return null;
@@ -55,6 +60,45 @@
       now = Date.now();
     } catch {
       // toast уже показан фетчером
+    }
+  }
+
+  const directPriorityOptions = $derived([
+    { value: "absolute", label: t("Direct wins any overlap") },
+    { value: "byOrder", label: t("Direct follows group order") },
+  ]);
+
+  async function loadDirectPriority() {
+    try {
+      const config = await fetcher.get<DirectPriority>("/system/direct-priority");
+      directPriority = config.mode;
+      directPriorityLoaded = true;
+    } catch {
+      directPriorityLoaded = false;
+    }
+  }
+
+  // Переключение переподнимает правила роутинга — отсюда подтверждение и
+  // блокировка селекта на время запроса: это не мгновенная настройка.
+  async function onDirectPriorityChange(mode: string) {
+    if (!directPriorityLoaded || directPrioritySaving) return;
+    if (mode !== "absolute" && mode !== "byOrder") return;
+    const previous = directPriority;
+    if (mode === previous) return;
+    if (!confirm(t("Switching re-applies routing rules. Continue?"))) {
+      directPriority = previous;
+      return;
+    }
+    directPrioritySaving = true;
+    directPriority = mode;
+    try {
+      const config = await fetcher.put<DirectPriority>("/system/direct-priority", { mode });
+      directPriority = config.mode;
+      toast.success(t("Direct priority saved"));
+    } catch {
+      directPriority = previous;
+    } finally {
+      directPrioritySaving = false;
     }
   }
 
@@ -90,6 +134,7 @@
   onMount(() => {
     loadInfo();
     loadClientRouting();
+    loadDirectPriority();
     routing.load();
     timer = setInterval(() => (now = Date.now()), 1000);
   });
@@ -156,6 +201,26 @@
         <Button onclick={saveClientRouting} inactive={!clientRoutingLoaded || clientRoutingSaving}>
           {clientRoutingSaving ? t("saving changes...") : t("Save Changes")}
         </Button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <div class="info">
+        <h3>{t("Direct group priority")}</h3>
+        <p class="hint">{t("Direct priority hint")}</p>
+      </div>
+      <div class="direct-priority-control">
+        <Select
+          options={directPriorityOptions}
+          selected={directPriority}
+          onValueChange={onDirectPriorityChange}
+          ariaLabel={t("Direct group priority")}
+        />
+        {#if directPrioritySaving}
+          <p class="hint">{t("Re-applying routing rules...")}</p>
+        {/if}
       </div>
     </div>
   </section>
@@ -280,6 +345,10 @@
 </div>
 
 <style>
+  .direct-priority-control {
+    min-width: 15rem;
+  }
+
   .settings {
     display: flex;
     flex-direction: column;

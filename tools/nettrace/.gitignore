@@ -1,7 +1,8 @@
 # cached AWS ip-ranges.json (re-downloaded on demand)
 aws-ip-ranges.cache.json
-# learn stores / captures
+# learn stores / captures — содержат реальные адреса, ASN и время сессий
 *.tsv
 *.log
+*.json
 __pycache__/
 *.pyc

@@ -70,6 +70,7 @@ Color = MagiTrickle intent (not actual path — see limitation):
 | `--no-check-ipset` | rule-match only, skip live ipset query |
 | `--no-udp` / `--no-tcp` | restrict protocol |
 | `--no-geo` | skip ASN/country lookup |
+| `--ipinfo-token TOKEN` | ipinfo.io token; defaults to `$IPINFO_TOKEN`, empty = anonymous endpoint |
 | `--tsv PATH` | also write TSV log |
 | `--append` | append to existing `--tsv` instead of overwriting |
 | `--resolve-hostnames` | reverse-DNS (PTR) each destination IP |

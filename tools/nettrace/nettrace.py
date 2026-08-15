@@ -840,7 +840,11 @@ def build_parser():
     p.add_argument("--check-ipset", dest="check_ipset", action="store_true", default=True, help="query live ipset membership (default on)")
     p.add_argument("--no-check-ipset", dest="check_ipset", action="store_false")
     p.add_argument("--no-geo", action="store_true", help="disable ASN/country lookup")
-    p.add_argument("--ipinfo-token", default="")
+    # Токен только из окружения: захардкоженный ключ утекает вместе с репозиторием
+    # и его квоту жгут все, кто склонировал. Без токена скрипт работает по
+    # анонимному ipinfo.io (лимит ниже, ASN и страна те же).
+    p.add_argument("--ipinfo-token", default=os.environ.get("IPINFO_TOKEN", ""),
+                   help="ipinfo.io API token (default: $IPINFO_TOKEN; empty = anonymous endpoint)")
     p.add_argument("--tcp", dest="tcp", action="store_true", default=True)
     p.add_argument("--no-tcp", dest="tcp", action="store_false")
     p.add_argument("--udp", dest="udp", action="store_true", default=True)

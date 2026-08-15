@@ -19,6 +19,7 @@ const INTERFACES: Interfaces = {
 
 const ALIASES: Record<string, string> = {};
 let CLIENT_ROUTING = { mode: "exclude" as const, source_networks: ["192.168.1.50"] };
+let DIRECT_PRIORITY = { mode: "absolute" as "absolute" | "byOrder" };
 
 const DATA = JSON.parse(Deno.readTextFileSync("./dev/groups.json"));
 const SUBSCRIPTIONS: Subscription[] = [
@@ -180,6 +181,19 @@ app.get(`${API_BASE}/system/client-routing`, (c) => c.json(CLIENT_ROUTING));
 app.put(`${API_BASE}/system/client-routing`, async (c) => {
   CLIENT_ROUTING = await c.req.json();
   return c.json(CLIENT_ROUTING);
+});
+app.get(`${API_BASE}/system/direct-priority`, (c) => c.json(DIRECT_PRIORITY));
+app.put(`${API_BASE}/system/direct-priority`, async (c) => {
+  const body = await c.req.json();
+  if (body?.mode !== "absolute" && body?.mode !== "byOrder") {
+    return c.json({ error: `unknown direct priority mode "${body?.mode}"` }, 400);
+  }
+  // Настоящая ручка переподнимает цепочки роутинга и отвечает не мгновенно —
+  // задержка держит в моке то же поведение, ради которого в UI есть блокировка
+  // селекта на время запроса.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  DIRECT_PRIORITY = { mode: body.mode };
+  return c.json(DIRECT_PRIORITY);
 });
 app.get(`${API_BASE}/system/interfaces/aliases`, (c) => c.json(ALIASES));
 app.post(`${API_BASE}/system/interfaces/aliases`, async (c) => {

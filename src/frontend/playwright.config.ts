@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Порт дев-сервера переопределяется E2E_PORT: 5173 на машине разработчика
+// нередко занят другим проектом, и reuseExistingServer молча подсовывает
+// тестам ЧУЖОЕ приложение — падения в таком прогоне ничего не значат.
+const PORT = Number(process.env.E2E_PORT || 5173);
+
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
@@ -9,7 +14,7 @@ export default defineConfig({
   reporter: "list",
   outputDir: "node_modules/.playwright-results",
   use: {
-    baseURL: "http://localhost:5173",
+    baseURL: `http://localhost:${PORT}`,
     trace: "off",
     screenshot: "off",
     video: "off",
@@ -21,8 +26,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: "npm run dev:frontend",
-    url: "http://localhost:5173",
+    command: `npm run dev:frontend -- --port ${PORT} --strictPort`,
+    url: `http://localhost:${PORT}`,
     reuseExistingServer: !process.env.CI,
   },
 });

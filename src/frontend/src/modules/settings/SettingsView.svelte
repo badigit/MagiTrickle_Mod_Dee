@@ -27,6 +27,12 @@
   let clientRoutingLoaded = $state(false);
   let clientRoutingSaving = $state(false);
   let directPriority = $state<"absolute" | "byOrder">("absolute");
+  // Последний РЕЖИМ, подтверждённый сервером. Отдельно от directPriority,
+  // потому что directPriority связан с селектом двусторонне: bits-ui успевает
+  // записать туда новый выбор ДО вызова onValueChange, и сравнение «пришёл ли
+  // другой режим» по самому directPriority всегда даёт «тот же» — запрос не
+  // уходил вовсе, а после перезагрузки страницы выбор откатывался (mt-ui).
+  let directPriorityApplied = $state<"absolute" | "byOrder">("absolute");
   let directPriorityLoaded = $state(false);
   let directPrioritySaving = $state(false);
 
@@ -72,6 +78,7 @@
     try {
       const config = await fetcher.get<DirectPriority>("/system/direct-priority");
       directPriority = config.mode;
+      directPriorityApplied = config.mode;
       directPriorityLoaded = true;
     } catch {
       directPriorityLoaded = false;
@@ -83,7 +90,7 @@
   async function onDirectPriorityChange(mode: string) {
     if (!directPriorityLoaded || directPrioritySaving) return;
     if (mode !== "absolute" && mode !== "byOrder") return;
-    const previous = directPriority;
+    const previous = directPriorityApplied;
     if (mode === previous) return;
     if (!confirm(t("Switching re-applies routing rules and takes about 10 seconds. Continue?"))) {
       directPriority = previous;
@@ -94,6 +101,7 @@
     try {
       const config = await fetcher.put<DirectPriority>("/system/direct-priority", { mode });
       directPriority = config.mode;
+      directPriorityApplied = config.mode;
       toast.success(t("Direct priority saved"));
     } catch {
       directPriority = previous;

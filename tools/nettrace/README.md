@@ -74,7 +74,8 @@ Color = MagiTrickle intent (not actual path — see limitation):
 | `--tsv PATH` | also write TSV log |
 | `--append` | append to existing `--tsv` instead of overwriting |
 | `--resolve-hostnames` | reverse-DNS (PTR) each destination IP |
-| `--no-port-swap` | do not `ntohs()` ports (use if ports look wrong) |
+| `--port-swap` | `ntohs()` ports — only if they look byte-swapped (443 shown as 47873) |
+| `--repeat-every N` | reprint a repeating endpoint every N hits (1=every hit, 0=never; default 25) |
 | `--debug-fields` | print raw ETW field names of the first event |
 
 ## Learn & push to MagiTrickle
@@ -149,4 +150,4 @@ This fully replaces `network_watch.ps1` + `mt_add_missing.ps1` (TCP-only, UDP-bl
   test-case mode are planned — see beads `mt-wf4`.
 - **ETW field names / byte order** for the Kernel-Network provider are validated
   at runtime; if IPs or ports look wrong on your build, run `--debug-fields` and
-  adjust, and try `--no-port-swap`.
+  adjust, and try `--port-swap`.

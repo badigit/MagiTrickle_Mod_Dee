@@ -483,7 +483,7 @@ def run(args):
         return False
 
     q = Queue()
-    cap = Capture(q, args.tcp, args.udp, not args.no_port_swap, args.debug_fields, args.recv)
+    cap = Capture(q, args.tcp, args.udp, args.port_swap, args.debug_fields, args.recv)
 
     hostres = HostResolver(args.resolve_hostnames)
 
@@ -526,7 +526,8 @@ def run(args):
                 key = (proto, pid, ip, port)
                 counts[key] += 1
                 if key in seen:
-                    if counts[key] == 2 or counts[key] % 25 == 0:
+                    every = args.repeat_every
+                    if every and (counts[key] == 2 or counts[key] % every == 0):
                         rows.append((proto, pid, ip, port, counts[key], False))
                     continue
                 seen.add(key)
@@ -1006,10 +1007,14 @@ def build_parser():
     p.add_argument("--udp", dest="udp", action="store_true", default=True)
     p.add_argument("--no-udp", dest="udp", action="store_false")
     p.add_argument("--recv", action="store_true", help="also capture inbound events (datarecv/accept) — reveals endpoints that never receive a send from us")
+    p.add_argument("--repeat-every", type=int, default=25, metavar="N",
+                   help="reprint a repeating endpoint every N hits (1=every hit, 0=never; default 25)")
     p.add_argument("--tsv", help="also write TSV to this path")
     p.add_argument("--append", action="store_true", help="append to existing --tsv instead of overwriting")
     p.add_argument("--resolve-hostnames", action="store_true", help="reverse-DNS each destination IP (PTR)")
-    p.add_argument("--no-port-swap", action="store_true", help="do not ntohs() ETW ports (use if ports look wrong)")
+    p.add_argument("--port-swap", action="store_true",
+                   help="ntohs() ETW ports — only if ports look byte-swapped (443 shown as 47873)")
+    p.add_argument("--no-port-swap", action="store_true", help=argparse.SUPPRESS)  # kept: was the old default-off switch
     p.add_argument("--debug-fields", action="store_true", help="print raw ETW field names of first event and exit-safe")
     # --- learn / push ---
     g = p.add_argument_group("learn / push to MagiTrickle")

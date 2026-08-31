@@ -26,8 +26,9 @@ import socket
 import sys
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, Empty
 
 import requests
@@ -35,6 +36,7 @@ import colorama
 
 try:
     from etw import ETW, ProviderInfo
+    from etw.etw import TraceProperties
     from etw.GUID import GUID
 except ImportError:
     print("FATAL: pywintrace not installed. Run:  pip install pywintrace", file=sys.stderr)
@@ -44,9 +46,14 @@ colorama.init()
 
 KERNEL_NETWORK_GUID = "{7DD42A49-5329-4832-8DFD-43D979153A88}"
 # Microsoft-Windows-Kernel-Network event ids — outbound ("datasent") only.
+# direction "out" — remote endpoint sits in daddr/dport; "in" — in saddr/sport.
 EVT = {
-    10: ("TCP", 4), 42: ("UDP", 4),   # IPv4 send
-    26: ("TCP", 6), 58: ("UDP", 6),   # IPv6 send
+    10: ("TCP", 4, "out"), 12: ("TCP", 4, "out"),   # IPv4 datasent / connect
+    11: ("TCP", 4, "in"),  15: ("TCP", 4, "in"),    # IPv4 datarecv / accept
+    42: ("UDP", 4, "out"), 43: ("UDP", 4, "in"),    # IPv4 UDP send / recv
+    26: ("TCP", 6, "out"), 28: ("TCP", 6, "out"),   # IPv6 datasent / connect
+    27: ("TCP", 6, "in"),  31: ("TCP", 6, "in"),    # IPv6 datarecv / accept
+    58: ("UDP", 6, "out"), 59: ("UDP", 6, "in"),    # IPv6 UDP send / recv
 }
 
 # ANSI colors
@@ -309,18 +316,26 @@ class HostResolver:
 # ------------------------------------------------------------------- ETW capture
 class Capture:
     """Runs an ETW session in a background thread, pushes normalized events."""
-    def __init__(self, out_queue, want_tcp, want_udp, swap_ports, debug):
+    def __init__(self, out_queue, want_tcp, want_udp, swap_ports, debug, want_in=False):
         self.q = out_queue
         self.debug = debug
         self.swap_ports = swap_ports
-        ids = [eid for eid, (proto, _) in EVT.items()
-               if (proto == "TCP" and want_tcp) or (proto == "UDP" and want_udp)]
+        ids = [eid for eid, (proto, _, direction) in EVT.items()
+               if ((proto == "TCP" and want_tcp) or (proto == "UDP" and want_udp))
+               and (direction == "out" or want_in)]
         self._ids = set(ids)
         provider = ProviderInfo("Microsoft-Windows-Kernel-Network", GUID(KERNEL_NETWORK_GUID))
+        # pywintrace defaults to 1 MB buffers and leaves FlushTimer at 0, so a
+        # real-time session only delivers when a buffer fills up — with tiny
+        # network events that is tens of seconds of apparent "lag". Small
+        # buffers + a 1 s flush timer make delivery near-live.
+        self.props = TraceProperties(ring_buf_size=64, min_buffers=16, max_buffers=64)
+        self.props.get().contents.FlushTimer = 1
         self._etw = ETW(
             providers=[provider],
             event_id_filters=list(ids),
             event_callback=self._on_event,
+            properties=self.props,
         )
         self._debugged = False
 
@@ -337,18 +352,28 @@ class Capture:
             sys.stderr.write(f"[debug] event_id={event_id} fields={list(data.keys())}\n")
             sys.stderr.write(f"[debug] raw={data}\n")
             sys.stderr.flush()
-        proto, fam = EVT[event_id]
+        proto, fam, direction = EVT[event_id]
         pid = _first(data, "PID", "ProcessId", "EventHeader.ProcessId")
-        daddr = _first(data, "daddr", "DestAddr", "destination")
-        dport = _first(data, "dport", "DestPort")
+        if direction == "out":
+            raddr = _first(data, "daddr", "DestAddr", "destination")
+            rport = _first(data, "dport", "DestPort")
+        else:  # datarecv/accept: the remote side is the source
+            raddr = _first(data, "saddr", "SourceAddr", "source")
+            rport = _first(data, "sport", "SourcePort")
         size = _first(data, "size", "Size", default=0)
-        if pid is None or daddr is None:
+        if pid is None or raddr is None:
             return
-        ip = _norm_ip(daddr, fam)
-        port = _norm_port(dport, self.swap_ports)
+        ip = _norm_ip(raddr, fam)
+        port = _norm_port(rport, self.swap_ports)
         if ip is None:
             return
         self.q.put((proto, int(pid), ip, port, int(size or 0)))
+
+    def events_lost(self):
+        try:
+            return int(self.props.get().contents.EventsLost)
+        except Exception:
+            return 0
 
     def start(self):
         self._etw.start()
@@ -458,7 +483,7 @@ def run(args):
         return False
 
     q = Queue()
-    cap = Capture(q, args.tcp, args.udp, not args.no_port_swap, args.debug_fields)
+    cap = Capture(q, args.tcp, args.udp, not args.no_port_swap, args.debug_fields, args.recv)
 
     hostres = HostResolver(args.resolve_hostnames)
 
@@ -471,6 +496,7 @@ def run(args):
 
     counts = defaultdict(int)          # key -> hit count
     seen = set()
+    enricher = Enricher(geo, hostres, tsv, mt, workers=args.geo_workers, hold=args.geo_hold)
 
     print(f"Watching: name={name_filters or '*'} pid={sorted(pid_filters) or '*'}  "
           f"proto={'TCP' if args.tcp else ''}{'/' if args.tcp and args.udp else ''}{'UDP' if args.udp else ''}")
@@ -486,7 +512,7 @@ def run(args):
             # drain a batch
             batch = []
             try:
-                batch.append(q.get(timeout=0.5))
+                batch.append(q.get(timeout=0.2))
                 while len(batch) < 500:
                     batch.append(q.get_nowait())
             except Empty:
@@ -508,18 +534,21 @@ def run(args):
                     new_ips.append(ip)
                 rows.append((proto, pid, ip, port, counts[key], True))
 
+            # MT lookup stays synchronous: it is one batched call to the router on
+            # the LAN and it decides the line's colour. Geo/PTR go off-thread.
             if mt and new_ips:
                 mt.annotate(list(dict.fromkeys(new_ips)))
 
             for proto, pid, ip, port, hits, is_new in rows:
-                _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv)
-            if tsv:
-                tsv.flush()
+                _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv, enricher)
+            enricher.flush()
     except KeyboardInterrupt:
         print(f"\n{C_GRAY}Ctrl+C — stopping...{C_RESET}")
     finally:
         # Summary/push FIRST so results appear instantly on Ctrl+C — the ETW stop
         # below can lag while ProcessTrace flushes real-time buffers.
+        enricher.drain(args.geo_wait)
+        enricher.shutdown()
         if tsv:
             tsv.close()
         _summary(counts, mt, geo)
@@ -537,49 +566,173 @@ def run(args):
                     subnet_map, labels = aggregate(recs, args.agg, args.min_count, args.promote16, aws)
                     push_subnets(mt, args.push_to_group, subnet_map, args.confirm, args.allow_wide, labels)
 
+        lost = getattr(cap, "events_lost", lambda: 0)()
+        if lost:
+            print(f"{C_YELLOW}ETW dropped {lost} events (buffers too small){C_RESET}")
         _stop_capture(cap)
 
 
-def _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv):
-    pname = procs.name(pid) or f"pid{pid}"
-    ts = datetime.now().strftime("%H:%M:%S")
-    mt_tag, mt_hit = (mt.tag(ip) if mt else ("", False))
-    meta = geo.info(ip) if is_new else {"summary": "", "country": geo._cache.get(ip, {}).get("country", "")}
-    detail = meta["summary"]
-    country = meta.get("country", "")
+_print_lock = threading.Lock()
 
-    if is_new and hostres:
-        host = hostres.name(ip)
-        if host:
-            detail = f"{host} | {detail}" if detail else host
 
+def _color(country, mt, mt_hit):
     if country == "RU":
-        color = C_GRAY
-    elif mt and mt_hit:
-        color = C_GREEN
-    elif mt:
-        color = C_YELLOW
+        return C_GRAY
+    if mt and mt_hit:
+        return C_GREEN
+    if mt:
+        return C_YELLOW
+    return C_RESET
+
+
+def _tsv_row(tsv, proto, pname, pid, ip, port, mt, detail):
+    m = mt._cache.get(ip) if mt else None
+    groups = (m or {}).get("groups", "")
+    if not mt:
+        ipset = ""
+    elif not m:
+        ipset = "no"
+    elif m["in_ipset"] is None:
+        ipset = "n/a"
     else:
-        color = C_RESET
+        ipset = "yes" if m["in_ipset"] else "no"
+    tsv.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{proto}\t{pname}\t{pid}\t{ip}\t{port}\t{groups}\t{ipset}\t{detail}\n")
+    tsv.flush()
 
-    tail = f" [x{hits}]" if hits > 1 else ""
-    line = f"[{ts}] [{pname}] {proto} {ip}:{port} {mt_tag}{tail}"
-    if detail:
-        line += f"  {detail}"
-    print(f"{color}{line}{C_RESET}")
 
-    if tsv and is_new:
-        m = mt._cache.get(ip) if mt else None
-        groups = (m or {}).get("groups", "")
-        if not mt:
-            ipset = ""
-        elif not m:
-            ipset = "no"
-        elif m["in_ipset"] is None:
-            ipset = "n/a"
-        else:
-            ipset = "yes" if m["in_ipset"] else "no"
-        tsv.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}\t{proto}\t{pname}\t{pid}\t{ip}\t{port}\t{groups}\t{ipset}\t{detail}\n")
+class Enricher:
+    """ASN/country/PTR lookups are 1-3 blocking network round-trips per IP.
+
+    Done inline before printing they stalled the whole capture for seconds per
+    new endpoint. So the lookup runs off-thread and the line waits for it in an
+    ordered buffer instead: output stays chronological and every endpoint still
+    prints as ONE complete line. A lookup that overruns `hold` seconds stops
+    holding the queue and its line goes out unenriched — one dead lookup must
+    never freeze the live view. Repeat hits of a known IP never wait at all.
+    """
+
+    def __init__(self, geo, hostres, tsv, mt, workers=8, hold=5.0):
+        self.geo = geo
+        self.hostres = hostres
+        self.tsv = tsv
+        self.mt = mt
+        self.hold = hold
+        self.pool = ThreadPoolExecutor(max_workers=workers)
+        self._pending = set()
+        self._claimed = set()
+        self._queue = deque()
+        self._lk = threading.Lock()
+
+    @property
+    def enabled(self):
+        return self.geo.enabled or (self.hostres and self.hostres.enabled)
+
+    def _claim(self, ip):
+        """True if this ip still needs a lookup, and nobody else took it."""
+        if not self.enabled:
+            return False
+        with self._lk:
+            if ip in self._claimed or ip in self.geo._cache:
+                return False
+            self._claimed.add(ip)
+            return True
+
+    def add(self, entry):
+        """Queue one output line. Enrichment (if needed) starts here."""
+        entry["deadline"] = time.time() + self.hold
+        with self._lk:
+            self._queue.append(entry)
+        if entry["ready"]:
+            return
+        f = self.pool.submit(self._work, entry)
+        with self._lk:
+            self._pending.add(f)
+        f.add_done_callback(self._retire)
+
+    def _retire(self, f):
+        with self._lk:
+            self._pending.discard(f)
+
+    def _work(self, entry):
+        ip = entry["ip"]
+        try:
+            meta = self.geo.info(ip)
+            detail = meta["summary"]
+            host = self.hostres.name(ip) if self.hostres else ""
+            if host:
+                detail = f"{host} | {detail}" if detail else host
+            entry["detail"] = detail
+            entry["country"] = meta.get("country", "")
+        except Exception:
+            pass
+        finally:
+            entry["ready"] = True
+
+    def flush(self, force=False):
+        """Print every line from the head of the queue that is ready or expired.
+        Head-of-line only — a later line never overtakes an earlier one."""
+        now = time.time()
+        out = []
+        with self._lk:
+            while self._queue:
+                e = self._queue[0]
+                if not (force or e["ready"] or now >= e["deadline"]):
+                    break
+                out.append(self._queue.popleft())
+        for e in out:
+            self._print(e)
+
+    def _print(self, e):
+        detail = e["detail"]
+        tail = f" [x{e['hits']}]" if e["hits"] > 1 else ""
+        line = f"[{e['ts']}] [{e['pname']}] {e['proto']} {e['ip']}:{e['port']} {e['mt_tag']}{tail}"
+        if detail:
+            line += f"  {detail}"
+        color = _color(e["country"], self.mt, e["mt_hit"])
+        with _print_lock:
+            print(f"{color}{line}{C_RESET}")
+        if self.tsv and e["is_new"]:
+            _tsv_row(self.tsv, e["proto"], e["pname"], e["pid"], e["ip"], e["port"], self.mt, detail)
+
+    def drain(self, timeout=15):
+        """Wait for in-flight lookups, then print what is left — the summary and
+        the learn store read the geo cache, so bailing early loses ASN/CIDR."""
+        with self._lk:
+            pend = list(self._pending)
+        if pend:
+            print(f"{C_GRAY}(waiting for {len(pend)} pending geo lookups, max {timeout}s){C_RESET}")
+            deadline = time.time() + timeout
+            for f in pend:
+                left = deadline - time.time()
+                if left <= 0:
+                    break
+                try:
+                    f.result(timeout=left)
+                except Exception:
+                    pass
+        self.flush(force=True)
+
+    def shutdown(self):
+        self.pool.shutdown(wait=False, cancel_futures=True)
+
+
+def _emit(proto, pid, ip, port, hits, is_new, procs, mt, geo, hostres, tsv, enricher):
+    mt_tag, mt_hit = (mt.tag(ip) if mt else ("", False))
+    meta = geo._cache.get(ip) or {}
+    detail = meta.get("summary", "")
+    host = hostres._cache.get(ip) if hostres else ""
+    if host:
+        detail = f"{host} | {detail}" if detail else host
+
+    needs_lookup = is_new and enricher._claim(ip)
+    enricher.add({
+        "ts": datetime.now().strftime("%H:%M:%S"),
+        "proto": proto, "pid": pid, "pname": procs.name(pid) or f"pid{pid}",
+        "ip": ip, "port": port, "hits": hits, "is_new": is_new,
+        "mt_tag": mt_tag, "mt_hit": mt_hit,
+        "detail": detail, "country": meta.get("country", ""),
+        "ready": not needs_lookup,
+    })
 
 
 def _summary(counts, mt, geo):
@@ -840,6 +993,9 @@ def build_parser():
     p.add_argument("--check-ipset", dest="check_ipset", action="store_true", default=True, help="query live ipset membership (default on)")
     p.add_argument("--no-check-ipset", dest="check_ipset", action="store_false")
     p.add_argument("--no-geo", action="store_true", help="disable ASN/country lookup")
+    p.add_argument("--geo-workers", type=int, default=8, help="parallel ASN/PTR lookup threads (default 8)")
+    p.add_argument("--geo-hold", type=float, default=5.0, help="max seconds a line waits for its ASN/PTR lookup before printing unenriched (default 5)")
+    p.add_argument("--geo-wait", type=int, default=15, help="seconds to wait on exit for pending ASN/PTR lookups (default 15)")
     # Токен только из окружения: захардкоженный ключ утекает вместе с репозиторием
     # и его квоту жгут все, кто склонировал. Без токена скрипт работает по
     # анонимному ipinfo.io (лимит ниже, ASN и страна те же).
@@ -849,6 +1005,7 @@ def build_parser():
     p.add_argument("--no-tcp", dest="tcp", action="store_false")
     p.add_argument("--udp", dest="udp", action="store_true", default=True)
     p.add_argument("--no-udp", dest="udp", action="store_false")
+    p.add_argument("--recv", action="store_true", help="also capture inbound events (datarecv/accept) — reveals endpoints that never receive a send from us")
     p.add_argument("--tsv", help="also write TSV to this path")
     p.add_argument("--append", action="store_true", help="append to existing --tsv instead of overwriting")
     p.add_argument("--resolve-hostnames", action="store_true", help="reverse-DNS each destination IP (PTR)")

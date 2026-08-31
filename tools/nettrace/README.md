@@ -141,6 +141,76 @@ replaces `mt_add_missing.ps1`.
 
 This fully replaces `network_watch.ps1` + `mt_add_missing.ps1` (TCP-only, UDP-blind).
 
+## Troubleshooting: "it lags" / "it captures nothing"
+
+Four independent causes were found and fixed on 2026-08-31 while chasing an AnyDesk
+capture that looked frozen. If output ever looks wrong again, check these in order.
+
+### The capture itself is almost never the problem
+
+`etw_probe.py` settles that in one elevated run. It opens three Kernel-Network
+sessions — old event ids with stock pywintrace buffers, the extended id list, and
+the extended list with nettrace's own buffers — filters nothing by process, and
+just counts what arrives:
+
+```
+python etw_probe.py 15
+```
+
+Each phase runs as its own child process, because `ProcessTrace` can block for a
+long time inside `stop()`; numbers are printed *before* the stop and the child then
+hard-exits. It also prints a per-PID table with resolved process names, whether the
+name you are filtering on was seen at all, and `EventsLost`. Set `PROBE_MATCH` to
+look for something other than AnyDesk.
+
+### Delivery lag: ETW buffers
+
+pywintrace allocates 1 MB buffers and leaves `FlushTimer` at 0, so a real-time
+session only hands events over once a buffer fills. Kernel-Network events are tiny,
+so that is tens of seconds of apparent freeze. nettrace now uses 64 KB buffers with
+`FlushTimer = 1`.
+
+### Delivery lag: enrichment
+
+ASN/country/PTR are 1-3 blocking network round-trips per new IP. Inline they stalled
+the print loop for seconds per endpoint and made the `[HH:MM:SS]` stamp the time of
+*printing* rather than of the event. They now run off-thread; a line waits for its
+lookup in an ordered buffer for at most `--geo-hold` seconds (default 5) and then
+prints unenriched, so one dead lookup cannot freeze the live view. The result still
+lands in the cache, so `--learn` and the summary keep ASN and CIDR either way.
+
+### "It only caught it once"
+
+Repeat hits of the same `(protocol, PID, IP, port)` are suppressed — printed on the
+2nd hit, then every Nth. On a long-lived connection that reads as "it stopped
+tracking". Use `--repeat-every 1` to see every hit, `0` to silence repeats entirely.
+
+### "It caught nothing at all"
+
+An established, idle connection generates almost no `datasent` events — that is what
+the event *means*. Two fixes:
+
+- `connect`/`accept` events are captured now, so you see the moment a connection is
+  established rather than the first payload. Start the capture *before* reconnecting.
+- `--recv` adds inbound events. On an idle keepalive channel there is usually more
+  inbound than outbound, so without it you see half the picture.
+
+Filtering by `--pid` sidesteps process-name matching entirely. Beware that a service
+gets a new PID whenever it restarts:
+
+```powershell
+$a = @(); foreach ($i in (Get-Process AnyDesk).Id) { $a += "--pid"; $a += "$i" }
+python nettrace.py @a --recv --repeat-every 1 --for 20
+```
+
+### Ports looked byte-swapped
+
+The port arrives from ETW already in host order. nettrace used to apply another
+`ntohs()` on top by default, which printed port 443 as 47873 (`ntohs(443) = 47873`).
+The swap is off by default now; `--port-swap` restores it if some build needs it.
+Cross-check a live connection against `Get-NetTCPConnection -OwningProcess <pid>`
+before believing a port.
+
 ## Limitations (v1)
 
 - **Shows intent, not actual path.** MT annotation says whether a destination

@@ -503,7 +503,13 @@ def run(args):
     print(f"MagiTrickle: {args.mt_url}  (ipset={args.check_ipset})")
     print(f"Duration: {'until Ctrl+C' if args.duration == 0 else str(args.duration)+'s'}\n")
 
-    cap.start()
+    try:
+        cap.start()
+    except PermissionError:
+        print(f"{C_YELLOW}FATAL: access denied opening the ETW session. Run from an "
+              f"elevated shell (right-click terminal -> Run as administrator).{C_RESET}",
+              file=sys.stderr)
+        sys.exit(1)
     deadline = None if args.duration == 0 else time.time() + args.duration
     try:
         while True:
